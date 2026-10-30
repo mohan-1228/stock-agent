@@ -9,7 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import config
-from analysis import compute_returns, top_companies
+from analysis import compute_returns, find_outliers, top_companies
 from data import fetch_closes, fetch_market_caps
 from report import build_report
 from storage import connect, save_snapshot
@@ -41,7 +41,11 @@ def main():
 
     returns = compute_returns(closes).join(fetch_market_caps(tickers))
     top50 = top_companies(returns, config.TOP_N_COMPANIES)
-    report = build_report(last_day, returns, top50, names, config.TOP_N_MOVERS)
+    outliers = find_outliers(returns, "day_pct", config.OUTLIER_DAY_PCT)
+    report = build_report(
+        last_day, returns, top50, names, config.TOP_N_MOVERS,
+        outliers=outliers, outlier_threshold=config.OUTLIER_DAY_PCT,
+    )
 
     conn = connect(config.DB_PATH)
     save_snapshot(conn, last_day, returns)

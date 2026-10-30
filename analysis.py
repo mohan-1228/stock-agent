@@ -34,3 +34,16 @@ def top_companies(returns: pd.DataFrame, n: int = 50) -> pd.DataFrame:
     """The n largest companies by market cap (needs a market_cap column)."""
     valid = returns[returns["market_cap"].notna()]
     return valid.sort_values("market_cap", ascending=False).head(n)
+
+
+def find_outliers(returns: pd.DataFrame, column: str = "day_pct", threshold: float = 20.0):
+    """Rows that moved at least `threshold` percent in either direction, biggest first.
+
+    Huge moves are sometimes real (earnings, news) and sometimes bad data,
+    so the report flags them for a human to double-check.
+    """
+    valid = returns[returns[column].notna()]                      # drop tickers with no value
+    flagged = valid[valid[column].abs() >= threshold]             # up OR down, threshold included
+    return flagged.loc[flagged[column].abs().sort_values(ascending=False).index]  # biggest first
+
+

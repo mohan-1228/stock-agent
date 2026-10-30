@@ -11,3 +11,5 @@ HISTORY_PERIOD = "3mo"         # enough daily bars for the 21-day monthly window
 
 TOP_N_MOVERS = 10              # gainers / losers shown per period
 TOP_N_COMPANIES = 50           # size of the market-cap leaderboard
+
+OUTLIER_DAY_PCT = 20.0         # one-day moves this big (up or down) get a "verify this" flag

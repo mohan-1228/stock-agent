@@ -3,7 +3,7 @@ import datetime
 import numpy as np
 import pandas as pd
 
-from analysis import compute_returns, top_companies, top_movers
+from analysis import compute_returns, find_outliers, top_companies, top_movers
 from report import build_report
 from storage import connect, save_snapshot, ticker_history
 
@@ -78,3 +78,47 @@ def test_report_contains_expected_sections():
     assert "This week" in text and "This month" in text
     assert "Top 3 companies by market cap" in text
     assert "$3.00T" in text and "+2.00%" in text
+
+
+
+
+def test_find_outliers_both_directions_sorted_nan_ignored():
+    returns = pd.DataFrame(
+        {"day_pct": [25.0, -30.0, 19.9, 20.0, np.nan, -5.0]},
+        index=["UP", "DOWN", "JUSTUNDER", "EXACT", "NAN", "SMALL"],
+    )
+    out = find_outliers(returns, "day_pct", threshold=20.0)
+    # biggest absolute move first; exactly-at-threshold counts; 19.9 and NaN do not
+    assert list(out.index) == ["DOWN", "UP", "EXACT"]
+
+
+def test_find_outliers_none_found():
+    returns = pd.DataFrame({"day_pct": [1.0, -2.0]}, index=["A", "B"])
+    assert find_outliers(returns, "day_pct", 20.0).empty
+
+
+def test_report_flags_outliers_and_marks_tickers():
+    returns = _sample_returns()
+    returns.loc["BBB", "day_pct"] = -28.6
+    top = top_companies(returns, n=3)
+    names = {"AAA": "Alpha", "BBB": "Beta", "CCC": "Gamma"}
+    outliers = find_outliers(returns, "day_pct", 20.0)
+    text = build_report(
+        datetime.date(2026, 10, 30), returns, top, names, n_movers=2,
+        outliers=outliers, outlier_threshold=20.0,
+    )
+    assert "Verify these moves" in text
+    assert "BBB*" in text
+    assert "AAA*" not in text and "CCC*" not in text
+
+
+def test_report_without_outliers_has_no_verify_section():
+    returns = _sample_returns()
+    top = top_companies(returns, n=3)
+    names = {"AAA": "Alpha", "BBB": "Beta", "CCC": "Gamma"}
+    outliers = find_outliers(returns, "day_pct", 20.0)
+    text = build_report(
+        datetime.date(2026, 10, 30), returns, top, names, n_movers=2, outliers=outliers
+    )
+    assert "Verify these moves" not in text
+    assert "*" not in text
