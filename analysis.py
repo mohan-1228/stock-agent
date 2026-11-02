@@ -30,10 +30,19 @@ def top_movers(returns: pd.DataFrame, column: str, n: int = 10):
     return valid.nlargest(n, column), valid.nsmallest(n, column)
 
 
-def top_companies(returns: pd.DataFrame, n: int = 50) -> pd.DataFrame:
-    """The n largest companies by market cap (needs a market_cap column)."""
+def top_companies(returns: pd.DataFrame, n: int = 50, same_company_groups=()) -> pd.DataFrame:
+    """The n largest companies by market cap (needs a market_cap column).
+
+    same_company_groups: tuples of tickers that are share classes of one company,
+    e.g. [("GOOGL", "GOOG")]. Only the largest ticker in each group is kept.
+    """
     valid = returns[returns["market_cap"].notna()]
-    return valid.sort_values("market_cap", ascending=False).head(n)
+    ranked = valid.sort_values("market_cap", ascending=False)  # index is now in rank order
+    to_drop = []
+    for group in same_company_groups:
+        present = [t for t in ranked.index if t in group]      # tickers from this group, biggest first
+        to_drop += present[1:]                                 # keep the first, drop the rest
+    return ranked.drop(index=to_drop).head(n)
 
 
 def find_outliers(returns: pd.DataFrame, column: str = "day_pct", threshold: float = 20.0):

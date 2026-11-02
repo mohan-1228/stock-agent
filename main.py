@@ -39,8 +39,8 @@ def main():
         print(f"No market data for {today} (latest is {last_day}); market closed today. Skipping.")
         return
 
-    returns = compute_returns(closes).join(fetch_market_caps(tickers))
-    top50 = top_companies(returns, config.TOP_N_COMPANIES)
+    returns = compute_returns(closes).join(fetch_market_caps(tickers, config.MARKET_CAP_WORKERS))
+    top50 = top_companies(returns, config.TOP_N_COMPANIES, config.SAME_COMPANY_GROUPS)
     outliers = find_outliers(returns, "day_pct", config.OUTLIER_DAY_PCT)
     report = build_report(
         last_day, returns, top50, names, config.TOP_N_MOVERS,

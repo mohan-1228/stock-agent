@@ -1,8 +1,10 @@
+
+
 import datetime
 
 import numpy as np
 import pandas as pd
-
+import data
 from analysis import compute_returns, find_outliers, top_companies, top_movers
 from report import build_report
 from storage import connect, save_snapshot, ticker_history
@@ -122,3 +124,35 @@ def test_report_without_outliers_has_no_verify_section():
     )
     assert "Verify these moves" not in text
     assert "*" not in text
+
+
+
+def test_top_companies_keeps_one_ticker_per_company():
+    returns = pd.DataFrame(
+        {"market_cap": [3.40e12, 3.39e12, 5.0e12, 3.0e12]},
+        index=["GOOGL", "GOOG", "AAPL", "MSFT"],
+    )
+    out = top_companies(returns, n=3, same_company_groups=[("GOOGL", "GOOG")])
+    assert list(out.index) == ["AAPL", "GOOGL", "MSFT"]  # GOOG dropped, MSFT moves up
+
+
+def test_top_companies_keeps_whichever_share_class_is_larger():
+    returns = pd.DataFrame({"market_cap": [3.0e12, 3.1e12]}, index=["GOOGL", "GOOG"])
+    out = top_companies(returns, n=5, same_company_groups=[("GOOGL", "GOOG")])
+    assert list(out.index) == ["GOOG"]
+
+
+def test_top_companies_group_with_one_member_is_untouched():
+    returns = pd.DataFrame({"market_cap": [1.0e12, 2.0e12]}, index=["AAA", "GOOGL"])
+    out = top_companies(returns, n=5, same_company_groups=[("GOOGL", "GOOG")])
+    assert list(out.index) == ["GOOGL", "AAA"]
+
+
+def test_fetch_market_caps_parallel_keeps_order_and_nan(monkeypatch):
+    fake = {"A": 1.0e9, "B": float("nan"), "C": 3.0e9, "D": 4.0e9}
+    monkeypatch.setattr(data, "_fetch_one_cap", lambda t: fake[t])
+    caps = data.fetch_market_caps(["D", "A", "B", "C"], workers=3)
+    assert list(caps.index) == ["D", "A", "B", "C"]   # same order as the input
+    assert caps["D"] == 4.0e9 and caps["A"] == 1.0e9
+    assert np.isnan(caps["B"])
+    
