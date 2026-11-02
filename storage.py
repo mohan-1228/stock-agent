@@ -55,3 +55,21 @@ def ticker_history(conn, ticker, limit=30) -> pd.DataFrame:
         conn,
         params=(ticker.upper(), limit),
     )
+
+
+def latest_snapshot(conn):
+    """(trade_date, DataFrame indexed by ticker) for the newest saved day.
+
+    Returns (None, empty DataFrame) when nothing has been saved yet.
+    """
+    row = conn.execute("SELECT MAX(trade_date) FROM daily_returns").fetchone()
+    if row is None or row[0] is None:
+        return None, pd.DataFrame()
+    df = pd.read_sql_query(
+        "SELECT ticker, close, day_pct, week_pct, month_pct, market_cap "
+        "FROM daily_returns WHERE trade_date = ?",
+        conn,
+        params=(row[0],),
+        index_col="ticker",
+    )
+    return row[0], df.astype("float64")
