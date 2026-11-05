@@ -15,7 +15,7 @@ import pandas as pd
 import config
 from analysis import find_outliers, top_companies, top_movers
 from storage import connect, latest_snapshot, ticker_history
-from universe import load_universe
+from universe import load_universe, load_groups
 
 PERIOD_COLUMN = {"day": "day_pct", "week": "week_pct", "month": "month_pct"}
 
@@ -43,11 +43,13 @@ def _rows(df, names):
 class Toolbox:
     """Holds the data the tools read. One Toolbox = one snapshot of the latest saved day."""
 
-    def __init__(self, conn, names, same_company_groups=(), outlier_threshold=20.0):
+    def __init__(self, conn, names, same_company_groups=(), outlier_threshold=20.0, theme_groups=None):
         self.conn = conn
         self.names = names
         self.groups = same_company_groups
         self.outlier_threshold = outlier_threshold
+        self.theme_groups = theme_groups or {}  # {"banks": ["JPM", ...], ...}
+        self._theme_lookup = {name.casefold(): name for name in self.theme_groups}
         self.as_of, self.snapshot = latest_snapshot(conn)
 
     def _need_data(self):
@@ -109,6 +111,47 @@ class Toolbox:
         row = self.snapshot.loc[[symbol]]
         return {"as_of": self.as_of, "stock": _rows(row, self.names)[0]}
 
+
+    def _group_stats(self, tickers):
+        """Equal-weighted stats for the group's stocks that have data on the latest day."""
+        df = self.snapshot.loc[self.snapshot.index.intersection(tickers)]
+        stats = {"tickers_listed": len(tickers), "stocks_with_data": len(df)}
+        for period, column in PERIOD_COLUMN.items():
+            values = df[column].dropna()
+            stats[period] = {
+                "average_pct": _num(values.mean()),
+                "median_pct": _num(values.median()),
+                "up": int((values > 0).sum()),
+                "down": int((values < 0).sum()),
+            }
+        return stats, df
+
+    def get_group_summary(self, group=None):
+        self._need_data()
+        if not self.theme_groups:
+            raise RuntimeError("No groups defined. Create groups.csv first.")
+        note = "Averages are equal-weighted across the stocks in each group."
+        if group is None:  # no group asked for: compare all of them
+            return {
+                "as_of": self.as_of,
+                "note": note,
+                "groups": {
+                    name: self._group_stats(tickers)[0] for name, tickers in self.theme_groups.items()
+                },
+            }
+        name = self._theme_lookup.get(str(group).strip().casefold())
+        if name is None:
+            raise ValueError(f"Unknown group '{group}'. Available groups: {sorted(self.theme_groups)}")
+        stats, df = self._group_stats(self.theme_groups[name])
+        members = df.sort_values("month_pct", ascending=False).head(50)
+        return {
+            "as_of": self.as_of,
+            "group": name,
+            "note": note,
+            **stats,
+            "members_sorted_by_month": _rows(members, self.names),
+        }
+
         
 
     def get_outliers(self, threshold=None):
@@ -125,6 +168,7 @@ class Toolbox:
             "get_ticker_history": self.get_ticker_history,
             "get_outliers": self.get_outliers,
             "get_stock": self.get_stock,
+            "get_group_summary": self.get_group_summary,
         }
         if name not in tools:
             raise ValueError(f"Unknown tool: {name}")
@@ -182,6 +226,13 @@ TOOL_SPECS = [
         {"ticker": {"type": "string", "description": "Ticker symbol, for example AAPL."}},
         ["ticker"],
     ),
+    _spec(
+        "get_group_summary",
+        "Performance of a themed group of stocks (for example ai_stocks, semiconductors or banks): "
+        "average and median return, how many are up or down, and the members. "
+        "Leave 'group' out to compare every group at once.",
+        {"group": {"type": "string", "description": "Group name. Omit to compare all groups."}},
+    ),
     
 ]
 
@@ -200,7 +251,10 @@ def main():
         sys.exit("Usage: python tools.py TOOL_NAME key=value ...")
     universe = load_universe(config.TICKERS_CSV)
     names = dict(zip(universe["ticker"], universe["name"]))
-    toolbox = Toolbox(connect(config.DB_PATH), names, config.SAME_COMPANY_GROUPS, config.OUTLIER_DAY_PCT)
+    toolbox = Toolbox(
+        connect(config.DB_PATH), names, config.SAME_COMPANY_GROUPS, config.OUTLIER_DAY_PCT,
+        theme_groups=load_groups(config.GROUPS_CSV),
+    )
     args = {k: _parse(v) for k, v in (a.split("=", 1) for a in sys.argv[2:])}
     print(json.dumps(toolbox.call(sys.argv[1], args), indent=2))
 

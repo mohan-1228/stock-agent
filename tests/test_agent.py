@@ -7,6 +7,7 @@ import pytest
 from agent import run_agent
 from storage import connect, latest_snapshot, save_snapshot
 from tools import Toolbox
+from universe import load_groups
 
 NAMES = {"AAA": "Alpha", "BBB": "Beta", "CCC": "Gamma", "DDD": "Delta", "EEE": "Epsilon"}
 
@@ -204,3 +205,52 @@ def test_get_stock(toolbox):
     assert res["stock"]["close"] == 100.0
     with pytest.raises(ValueError):
         toolbox.get_stock("ZZZ")
+
+
+
+# ---------- groups ----------
+
+GROUPS = {"alpha_beta": ["AAA", "BBB"], "solo": ["CCC", "ZZZ"]}
+
+
+@pytest.fixture
+def group_toolbox(conn):
+    return Toolbox(conn, NAMES, theme_groups=GROUPS)
+
+
+def test_load_groups_normalizes_names_and_tickers(tmp_path):
+    f = tmp_path / "groups.csv"
+    f.write_text("group,tickers\nAI Chips,aaa bbb\nBig Tech,AAA\n")
+    assert load_groups(f) == {"ai chips": ["AAA", "BBB"], "big tech": ["AAA"]}
+
+
+def test_load_groups_missing_file_means_no_groups(tmp_path):
+    assert load_groups(tmp_path / "nope.csv") == {}
+
+
+def test_group_overview_compares_all_groups(group_toolbox):
+    res = group_toolbox.get_group_summary()
+    assert set(res["groups"]) == {"alpha_beta", "solo"}
+    ab = res["groups"]["alpha_beta"]
+    assert ab["stocks_with_data"] == 2
+    assert ab["month"]["average_pct"] == 1.0  # (10 + -8) / 2
+    assert ab["day"]["up"] == 1 and ab["day"]["down"] == 1
+    assert res["groups"]["solo"]["tickers_listed"] == 2   # ZZZ is listed...
+    assert res["groups"]["solo"]["stocks_with_data"] == 1  # ...but has no data
+
+
+def test_group_detail_lists_members_best_month_first(group_toolbox):
+    res = group_toolbox.get_group_summary("ALPHA_BETA")  # capital letters do not matter
+    assert res["group"] == "alpha_beta"
+    assert [m["ticker"] for m in res["members_sorted_by_month"]] == ["AAA", "BBB"]
+    assert res["week"]["median_pct"] == 0.5  # median of 4 and -3
+
+
+def test_unknown_group_lists_available_names(group_toolbox):
+    with pytest.raises(ValueError, match="alpha_beta"):
+        group_toolbox.get_group_summary("crypto")
+
+
+def test_groups_not_defined_gives_clear_error(toolbox):
+    with pytest.raises(RuntimeError, match="groups.csv"):
+        toolbox.get_group_summary()

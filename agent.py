@@ -11,7 +11,7 @@ import sys
 import config
 from storage import connect
 from tools import TOOL_SPECS, Toolbox
-from universe import load_universe
+from universe import load_groups, load_universe
 
 MAX_STEPS = 8  # stop runaway loops: at most this many model calls per question
 
@@ -90,7 +90,10 @@ def main():
 
     universe = load_universe(config.TICKERS_CSV)
     names = dict(zip(universe["ticker"], universe["name"]))
-    toolbox = Toolbox(connect(config.DB_PATH), names, config.SAME_COMPANY_GROUPS, config.OUTLIER_DAY_PCT)
+    toolbox = Toolbox(
+        connect(config.DB_PATH), names, config.SAME_COMPANY_GROUPS, config.OUTLIER_DAY_PCT,
+        theme_groups=load_groups(config.GROUPS_CSV),
+    )
     print(run_agent(BedrockClient(model_id), " ".join(sys.argv[1:]), toolbox, verbose=True))
 
 

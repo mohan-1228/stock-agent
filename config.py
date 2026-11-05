@@ -3,7 +3,8 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 TICKERS_CSV = BASE_DIR / "tickers.csv"
-EXTRA_TICKERS_CSV = BASE_DIR / "extra_tickers.csv"   # hand-picked names kept across refreshes
+EXTRA_TICKERS_CSV = BASE_DIR / "extra_tickers.csv" 
+GROUPS_CSV = BASE_DIR / "groups.csv"                 # themed groups (AI, banks, ...) for the agent  # hand-picked names kept across refreshes
 DB_PATH = BASE_DIR / "data" / "stocks.db"
 REPORTS_DIR = BASE_DIR / "reports"
 
