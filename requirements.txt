@@ -1,3 +1,6 @@
 yfinance
 pandas
 pytest
+lxml
+requests
+boto3

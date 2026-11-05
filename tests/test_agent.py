@@ -195,3 +195,12 @@ def test_agent_stops_after_max_steps(toolbox):
     answer = run_agent(client, "keep going", toolbox, max_steps=2)
     assert answer.startswith("I couldn't finish")
     assert len(client.calls) == 2
+
+
+
+def test_get_stock(toolbox):
+    res = toolbox.get_stock(" aaa ")
+    assert res["stock"]["ticker"] == "AAA"
+    assert res["stock"]["close"] == 100.0
+    with pytest.raises(ValueError):
+        toolbox.get_stock("ZZZ")

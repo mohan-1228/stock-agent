@@ -101,6 +101,16 @@ class Toolbox:
             "rows": rows,
         }
 
+    def get_stock(self, ticker):
+        self._need_data()
+        symbol = ticker.strip().upper()
+        if symbol not in self.snapshot.index:
+            raise ValueError(f"{symbol} is not in the latest snapshot.")
+        row = self.snapshot.loc[[symbol]]
+        return {"as_of": self.as_of, "stock": _rows(row, self.names)[0]}
+
+        
+
     def get_outliers(self, threshold=None):
         self._need_data()
         limit = self.outlier_threshold if threshold is None else float(threshold)
@@ -114,6 +124,7 @@ class Toolbox:
             "get_top_companies": self.get_top_companies,
             "get_ticker_history": self.get_ticker_history,
             "get_outliers": self.get_outliers,
+            "get_stock": self.get_stock,
         }
         if name not in tools:
             raise ValueError(f"Unknown tool: {name}")
@@ -165,6 +176,13 @@ TOOL_SPECS = [
         "or bad data.",
         {"threshold": {"type": "number", "description": "Minimum absolute one-day percent move."}},
     ),
+    _spec(
+        "get_stock",
+        "Latest close and day, week and month returns for one stock.",
+        {"ticker": {"type": "string", "description": "Ticker symbol, for example AAPL."}},
+        ["ticker"],
+    ),
+    
 ]
 
 
