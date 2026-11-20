@@ -4,10 +4,12 @@ import datetime
 import pandas as pd
 import pytest
 
-from agent import run_agent
+from agent import LocalClient, _from_ollama_response, _to_ollama_messages, _to_ollama_tools, run_agent, _strip_thinking
+from tools import TOOL_SPECS
 from storage import connect, latest_snapshot, save_snapshot
 from tools import Toolbox
 from universe import load_groups
+
 
 NAMES = {"AAA": "Alpha", "BBB": "Beta", "CCC": "Gamma", "DDD": "Delta", "EEE": "Epsilon"}
 
@@ -254,3 +256,83 @@ def test_unknown_group_lists_available_names(group_toolbox):
 def test_groups_not_defined_gives_clear_error(toolbox):
     with pytest.raises(RuntimeError, match="groups.csv"):
         toolbox.get_group_summary()
+
+
+# ---------- local model client (Ollama) ----------
+
+def test_messages_are_translated_for_ollama():
+    messages = [
+        {"role": "user", "content": [{"text": "Worst this week?"}]},
+        {"role": "assistant", "content": [{"toolUse": {"toolUseId": "t1", "name": "get_movers", "input": {"period": "week"}}}]},
+        {"role": "user", "content": [{"toolResult": {"toolUseId": "t1", "content": [{"json": {"as_of": "2026-11-02"}}], "status": "success"}}]},
+    ]
+    out = _to_ollama_messages("be careful", messages)
+    assert out[0] == {"role": "system", "content": "be careful"}
+    assert out[1] == {"role": "user", "content": "Worst this week?"}
+    assert out[2]["tool_calls"][0]["function"] == {"name": "get_movers", "arguments": {"period": "week"}}
+    assert out[3]["role"] == "tool" and out[3]["tool_name"] == "get_movers"
+    assert '"as_of": "2026-11-02"' in out[3]["content"]
+
+
+def test_tool_specs_are_translated_for_ollama():
+    tools = _to_ollama_tools(TOOL_SPECS)
+    assert len(tools) == len(TOOL_SPECS)
+    first = tools[0]["function"]
+    assert tools[0]["type"] == "function" and first["name"] == "get_movers"
+    assert first["parameters"]["required"] == ["period", "direction"]
+
+
+def test_ollama_reply_with_tool_call_becomes_tool_use():
+    data = {"message": {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "get_outliers", "arguments": {}}}]}}
+    reply = _from_ollama_response(data)
+    assert reply["stopReason"] == "tool_use"
+    use = reply["output"]["message"]["content"][0]["toolUse"]
+    assert use["name"] == "get_outliers" and use["input"] == {}
+
+
+def test_ollama_plain_reply_becomes_text():
+    reply = _from_ollama_response({"message": {"role": "assistant", "content": "All quiet."}})
+    assert reply["stopReason"] == "end_turn"
+    assert reply["output"]["message"]["content"] == [{"text": "All quiet."}]
+
+
+class FakeSession:
+    """Pretends to be the network: returns canned Ollama replies and records what was sent."""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.sent = []
+
+    def post(self, url, json, timeout):
+        self.sent.append((url, json))
+        reply = self.replies.pop(0)
+
+        class Response:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return reply
+
+        return Response()
+
+
+def test_agent_works_end_to_end_through_local_client(toolbox):
+    session = FakeSession(
+        [
+            {"message": {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "get_movers", "arguments": {"period": "week", "direction": "losers", "n": 1}}}]}},
+            {"message": {"role": "assistant", "content": "DDD fell the most."}},
+        ]
+    )
+    client = LocalClient("qwen3:4b", session=session)
+    assert run_agent(client, "Worst this week?", toolbox) == "DDD fell the most."
+    url, body = session.sent[1]
+    assert url.endswith("/api/chat") and body["model"] == "qwen3:4b" and body["think"] is False
+    assert body["messages"][-1]["role"] == "tool"
+
+
+def test_thinking_text_is_removed_from_local_replies():
+    raw = "Okay, let me work this out...\n</think>\n\nHUM fell 12.98%."
+    reply = _from_ollama_response({"message": {"role": "assistant", "content": raw}})
+    assert reply["output"]["message"]["content"] == [{"text": "HUM fell 12.98%."}]
+    assert _strip_thinking("<think>hmm</think>Done.") == "Done."

@@ -8,6 +8,7 @@ inference-profile ID shown in the Amazon Bedrock console).
 import os
 import sys
 
+import json
 import config
 from storage import connect
 from tools import TOOL_SPECS, Toolbox
@@ -81,12 +82,127 @@ class BedrockClient:
         )
 
 
+def _to_ollama_messages(system, messages):
+    """Translate our Bedrock-style messages into the format Ollama's /api/chat expects."""
+    out = [{"role": "system", "content": system}]
+    tool_names = {}  # toolUseId -> tool name, so results can say which tool they came from
+    for message in messages:
+        blocks = message["content"]
+        if message["role"] == "assistant":
+            text = "".join(b["text"] for b in blocks if "text" in b)
+            calls = []
+            for b in blocks:
+                if "toolUse" in b:
+                    use = b["toolUse"]
+                    tool_names[use["toolUseId"]] = use["name"]
+                    calls.append({"function": {"name": use["name"], "arguments": use["input"]}})
+            item = {"role": "assistant", "content": text}
+            if calls:
+                item["tool_calls"] = calls
+            out.append(item)
+        else:
+            for b in blocks:
+                if "text" in b:
+                    out.append({"role": "user", "content": b["text"]})
+                elif "toolResult" in b:
+                    result = b["toolResult"]
+                    payload = result["content"][0]["json"]
+                    out.append(
+                        {
+                            "role": "tool",
+                            "tool_name": tool_names.get(result["toolUseId"], ""),
+                            "content": json.dumps(payload),
+                        }
+                    )
+    return out
+
+
+def _to_ollama_tools(tool_specs):
+    """Our TOOL_SPECS are in Bedrock format; Ollama wants the OpenAI-style 'function' format."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": spec["toolSpec"]["name"],
+                "description": spec["toolSpec"]["description"],
+                "parameters": spec["toolSpec"]["inputSchema"]["json"],
+            },
+        }
+        for spec in tool_specs
+    ]
+
+def _strip_thinking(text):
+    """Remove the model's private 'thinking' text, keeping only the final answer."""
+    if "</think>" in text:
+        text = text.split("</think>")[-1]  # the real answer comes after the last tag
+    return text.replace("<think>", "").strip()
+
+
+def _from_ollama_response(data):
+    """Translate Ollama's reply back into the Bedrock-style shape run_agent understands."""
+    message = data["message"]
+    content = []
+    text = _strip_thinking(message.get("content") or "")
+    if text:
+        content.append({"text": text})
+    calls = message.get("tool_calls") or []
+    for number, call in enumerate(calls):
+        function = call["function"]
+        content.append(
+            {
+                "toolUse": {
+                    "toolUseId": f"call_{number}_{function['name']}",
+                    "name": function["name"],
+                    "input": function.get("arguments") or {},
+                }
+            }
+        )
+    return {
+        "stopReason": "tool_use" if calls else "end_turn",
+        "output": {"message": {"role": "assistant", "content": content}},
+    }
+
+
+class LocalClient:
+    """Talks to a model running on this computer through Ollama. Free and private."""
+
+    def __init__(self, model, url="http://localhost:11434", num_ctx=8192, session=None):
+        import requests  # imported here, same idea as boto3 above
+
+        self.model = model
+        self.url = url.rstrip("/")
+        self.num_ctx = num_ctx
+        self.session = session or requests
+
+    def converse(self, system, messages, tool_specs):
+        body = {
+            "model": self.model,
+            "messages": _to_ollama_messages(system, messages),
+            "tools": _to_ollama_tools(tool_specs),
+            "stream": False,
+            "think": False,  # skip the long "thinking" text; we want fast tool calls
+            "options": {"num_ctx": self.num_ctx, "temperature": 0},
+        }
+        response = self.session.post(f"{self.url}/api/chat", json=body, timeout=300)
+        response.raise_for_status()
+        return _from_ollama_response(response.json())
+
+
+def make_client():
+    """Pick the model backend from environment variables."""
+    local_model = os.environ.get("OLLAMA_MODEL")
+    if local_model:
+        return LocalClient(local_model)
+    model_id = os.environ.get("BEDROCK_MODEL_ID")
+    if model_id:
+        return BedrockClient(model_id)
+    sys.exit("Set OLLAMA_MODEL (for example qwen3:4b) or BEDROCK_MODEL_ID first.")
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit('Usage: python agent.py "your question"')
-    model_id = os.environ.get("BEDROCK_MODEL_ID")
-    if not model_id:
-        sys.exit("Set BEDROCK_MODEL_ID first (copy the model or inference-profile ID from the Bedrock console).")
+    client = make_client()
 
     universe = load_universe(config.TICKERS_CSV)
     names = dict(zip(universe["ticker"], universe["name"]))
@@ -94,8 +210,7 @@ def main():
         connect(config.DB_PATH), names, config.SAME_COMPANY_GROUPS, config.OUTLIER_DAY_PCT,
         theme_groups=load_groups(config.GROUPS_CSV),
     )
-    print(run_agent(BedrockClient(model_id), " ".join(sys.argv[1:]), toolbox, verbose=True))
-
+    print(run_agent(client, " ".join(sys.argv[1:]), toolbox, verbose=True))
 
 if __name__ == "__main__":
     main()
