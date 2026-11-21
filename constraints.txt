@@ -1,0 +1,50 @@
+# Exact versions of every package (direct and indirect) that the tests pass with.
+# Used as: python -m pip install -r requirements.txt -c constraints.txt
+# requirements.txt says WHAT we need; this file says WHICH version, so CI and every
+# laptop install the same thing. Refresh on purpose (about monthly, or when yfinance
+# breaks) in its own PR -- see "Refresh pinned versions" in CLAUDE.md.
+annotated-doc==0.0.7
+annotated-types==0.8.0
+anyio==4.16.0
+beautifulsoup4==4.15.0
+boto3==1.44.6
+botocore==1.44.6
+certifi==2026.10.23
+cffi==2.1.1
+charset-normalizer==3.5.2
+click==8.5.1
+curl_cffi==0.17.0
+fastapi==0.165.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.20
+iniconfig==2.3.1
+jmespath==1.1.0
+lxml==6.1.3
+numpy==2.5.5
+opentelemetry-api==1.45.2
+packaging==26.3
+pandas==3.1.1
+peewee==4.5.3
+platformdirs==4.14.7
+pluggy==1.7.0
+protobuf==7.36.2
+pycparser==3.12
+pydantic==2.14.4
+pydantic_core==2.50.5
+Pygments==2.21.0
+pytest==9.2.0
+python-dateutil==2.9.0.post0
+pytz==2026.6
+requests==2.34.2
+s3transfer==0.19.3
+six==1.17.0
+soupsieve==4.1.2
+starlette==1.10.0
+typing-inspection==0.4.5
+typing_extensions==4.16.0
+urllib3==2.8.0
+uvicorn==0.54.0
+websockets==17.4
+yfinance==1.8.0
