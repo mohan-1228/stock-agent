@@ -128,6 +128,7 @@ Rules: validate inputs (unknown ticker or period gives a clear 4xx), reuse `Tool
 4. Company side panel with price line chart; groups and top-companies sections. *done*
    - 4b. Range change (`change_pct`) returned by `/api/stock/{ticker}/prices`, so the panel can show e.g. "+4.2% over 3M" without doing math in JavaScript. Separate PR after milestone 4. *done*
    - 4c. One-time history backfill (`backfill.py`): ~5 years of daily closes into `prices`, batches of 100 with a pause and one retry, safe to re-run. No page changes; longer chart ranges are a later PR. Follow-up: index on `prices(ticker, trade_date)` after measuring. *done*
+   - 4d. Index `idx_prices_ticker_date` on `prices(ticker, trade_date)`, created by `CREATE INDEX IF NOT EXISTS` in `storage.SCHEMA` (existing databases get it on first open, ~0.3 s once). One-ticker lookups went from ~25 ms to under 1 ms; the database grew from 36.9 MB to 51.8 MB. *done*
 5. `/api/ask` plus the Ask-the-AI box (local model), with loading and error states.
 6. News module, `news` table, news endpoints/tools, news panel and policy/macro section.
 7. Quality pass: GitHub Actions running pytest, number checker for AI answers, 20 to 30 evaluation questions, README with screenshots.
