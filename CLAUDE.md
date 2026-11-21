@@ -111,7 +111,7 @@ Rules: validate inputs (unknown ticker or period gives a clear 4xx), reuse `Tool
 
 ## Milestones (one pull request each; update the status as we go)
 1. Save daily price history (`prices` table, `save_prices`, `price_series`, called from `main.py`). *done*
-2. `api.py` with the read-only endpoints above, tested with FastAPI TestClient.
+2. `api.py` with the read-only endpoints above, tested with FastAPI TestClient. *done*
 3. Dashboard v1: tabs, bar charts, tables, outlier badges, light/dark.
 4. Company side panel with price line chart; groups and top-companies sections.
 5. `/api/ask` plus the Ask-the-AI box (local model), with loading and error states.
