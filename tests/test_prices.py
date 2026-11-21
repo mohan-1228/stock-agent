@@ -131,3 +131,38 @@ def test_toolbox_tiny_series_and_zero_close_do_not_crash(tmp_path):
     one = toolbox.get_price_series("ONE")
     assert len(one["prices"]) == 1
     assert one["ranges"]["1M"]["change_pct"] is None
+
+
+# --- Index on prices(ticker, trade_date) --------------------------------------
+
+def test_new_database_has_ticker_date_index(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    names = [row[1] for row in conn.execute("PRAGMA index_list('prices')")]
+    assert "idx_prices_ticker_date" in names
+
+
+def test_old_database_gets_index_when_opened(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)  # a database made before the index existed
+    old.execute("CREATE TABLE prices (trade_date TEXT NOT NULL, ticker TEXT NOT NULL, "
+                "close REAL NOT NULL, PRIMARY KEY (trade_date, ticker))")
+    old.execute("INSERT INTO prices VALUES ('2026-11-19', 'AAA', 12.0)")
+    old.commit()
+    old.close()
+
+    conn = connect(path)
+    names = [row[1] for row in conn.execute("PRAGMA index_list('prices')")]
+    assert "idx_prices_ticker_date" in names
+    assert list(price_series(conn, "AAA")["close"]) == [12.0]  # existing rows untouched
+
+
+def test_price_series_query_uses_the_index(tmp_path):
+    from storage import PRICE_SERIES_SQL
+
+    conn = connect(tmp_path / "t.db")
+    save_prices(conn, make_closes())
+    plan = conn.execute("EXPLAIN QUERY PLAN " + PRICE_SERIES_SQL, ("AAA", 63)).fetchall()
+    details = " ".join(row[3] for row in plan)
+    assert "USING INDEX idx_prices_ticker_date" in details

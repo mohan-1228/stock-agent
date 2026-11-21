@@ -21,7 +21,16 @@ CREATE TABLE IF NOT EXISTS prices (
     close      REAL NOT NULL,
     PRIMARY KEY (trade_date, ticker)
 );
+-- The primary key is sorted by date first, so finding one ticker meant walking every row.
+-- This index is sorted by ticker first: a price chart lookup jumps straight to that ticker.
+-- IF NOT EXISTS: an existing database gets it the next time it is opened (about 0.2 s, once).
+CREATE INDEX IF NOT EXISTS idx_prices_ticker_date ON prices(ticker, trade_date);
 """
+
+# The query behind price_series. A named constant so a test can check that it uses the index.
+PRICE_SERIES_SQL = (
+    "SELECT trade_date, close FROM prices WHERE ticker = ? ORDER BY trade_date DESC LIMIT ?"
+)
 
 
 def connect(db_path, check_same_thread=True):
@@ -103,9 +112,5 @@ def save_prices(conn, closes: pd.DataFrame):
 
 def price_series(conn, ticker, days=63) -> pd.DataFrame:
     """The last `days` saved closes for one ticker, oldest first (ready to draw as a line)."""
-    df = pd.read_sql_query(
-        "SELECT trade_date, close FROM prices WHERE ticker = ? ORDER BY trade_date DESC LIMIT ?",
-        conn,
-        params=(ticker.upper(), int(days)),
-    )
+    df = pd.read_sql_query(PRICE_SERIES_SQL, conn, params=(ticker.upper(), int(days)))
     return df.iloc[::-1].reset_index(drop=True)
