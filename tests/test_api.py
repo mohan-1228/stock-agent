@@ -1,5 +1,6 @@
 """API tests on a small made-up database. No network, no real model, no data/stocks.db."""
 import logging
+import re
 import sqlite3
 
 import numpy as np
@@ -190,3 +191,49 @@ def test_connection_is_closed_after_each_request(client, monkeypatch):
     for conn in opened:
         with pytest.raises(sqlite3.ProgrammingError):  # "Cannot operate on a closed database"
             conn.execute("SELECT 1")
+
+
+# ---------- dashboard page (web/) ----------
+
+
+def test_dashboard_page_is_served_at_root(client):
+    page = client.get("/")
+    assert page.status_code == 200
+    assert page.headers["content-type"].startswith("text/html")
+    assert "Information only, not investment advice." in page.text
+    script = client.get("/app.js")
+    assert script.status_code == 200
+    assert "javascript" in script.headers["content-type"]
+
+
+def test_api_routes_still_win_after_mounting_the_page(client):
+    """The static mount is at "/", so make sure it did not swallow the API."""
+    assert client.get("/api/health").json() == {"status": "ok"}
+    assert client.get("/api/movers?period=year&direction=gainers").status_code == 422
+    assert client.get("/api/no-such-endpoint").status_code == 404
+
+
+def test_cdn_scripts_are_pinned_and_have_sri():
+    """Every script from a CDN needs an exact version and an integrity hash.
+
+    Without a pinned version the CDN could serve a newer file; without SRI a changed
+    file would run unchecked. (A wrong hash blocks the file, so update both together.)
+    """
+    html = (api.WEB_DIR / "index.html").read_text()
+    external = re.findall(r"<script\s+src=\"(https://[^\"]+)\"([^>]*)>", html)
+    assert len(external) == 2  # Tailwind and Chart.js
+    for url, attributes in external:
+        assert re.search(r"@\d+\.\d+\.\d+/", url), f"version not pinned: {url}"
+        assert 'integrity="sha384-' in attributes, f"no SRI hash: {url}"
+        assert 'crossorigin="anonymous"' in attributes, f"no crossorigin: {url}"
+
+
+def test_app_js_never_uses_innerhtml():
+    """Golden rule 3: API text goes in with textContent only. Comments are allowed to mention it."""
+    code_lines = [
+        line
+        for line in (api.WEB_DIR / "app.js").read_text().splitlines()
+        if not line.strip().startswith("//")
+    ]
+    for line in code_lines:
+        assert "innerHTML" not in line and "insertAdjacentHTML" not in line, line
