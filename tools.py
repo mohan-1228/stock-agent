@@ -14,7 +14,7 @@ import pandas as pd
 
 import config
 from analysis import find_outliers, top_companies, top_movers
-from storage import connect, latest_snapshot, ticker_history
+from storage import connect, latest_snapshot, price_series, ticker_history
 from universe import load_universe, load_groups
 
 PERIOD_COLUMN = {"day": "day_pct", "week": "week_pct", "month": "month_pct"}
@@ -101,6 +101,26 @@ class Toolbox:
             "name": self.names.get(symbol, ""),
             "note": "Only days the report has run are saved. Newest first.",
             "rows": rows,
+        }
+
+    def get_price_series(self, ticker, days=63):
+        """Daily closes for one ticker, oldest first, for drawing a price line chart.
+
+        Reads the `prices` table (full daily history), not `daily_returns`
+        (which only has days the report ran). Not an agent tool yet: the dashboard uses it.
+        """
+        days = max(1, min(int(days), 252))
+        symbol = ticker.strip().upper()
+        series = price_series(self.conn, symbol, days)
+        if series.empty:
+            raise ValueError(f"No saved prices for {symbol}.")
+        return {
+            "as_of": self.as_of,
+            "ticker": symbol,
+            "name": self.names.get(symbol, ""),
+            "prices": [
+                {"date": r["trade_date"], "close": _num(r["close"])} for _, r in series.iterrows()
+            ],
         }
 
     def get_stock(self, ticker):
