@@ -9,10 +9,12 @@ Then open http://127.0.0.1:8000/docs to try every endpoint in the browser.
 """
 import logging
 from collections.abc import Iterator
+from pathlib import Path as FilePath
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 import config
 from storage import connect
@@ -29,6 +31,7 @@ GROUPS = load_groups(config.GROUPS_CSV)
 
 TICKER_PATTERN = r"^[A-Za-z0-9.\-]{1,10}$"  # AAPL, BRK-B, BRK.B
 GROUP_PATTERN = r"^[A-Za-z0-9_\-]{1,40}$"  # ai_stocks, banks
+WEB_DIR = FilePath(__file__).parent / "web"  # the dashboard page (index.html, app.js)
 
 app = FastAPI(title="Stock Agent API", description="Information only, not investment advice.")
 
@@ -139,3 +142,9 @@ def group(name: str = Path(pattern=GROUP_PATTERN), tb: Toolbox = Depends(get_too
 @app.get("/api/outliers")
 def outliers(tb: Toolbox = Depends(get_toolbox)):
     return _run(tb.get_outliers)
+
+
+# Serve the dashboard (web/index.html at "/", web/app.js at "/app.js").
+# This must stay LAST: FastAPI checks routes in order, so every /api route above
+# is matched first and only other paths fall through to the static files.
+app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
