@@ -402,7 +402,9 @@ function renderGroups() {
 // anything else means "panel closed". Clicks, the back button, a reload and a shared link
 // all change the hash, and one listener (route) reacts to it.
 
-const PRICE_DAYS = 63;          // fetched once per ticker; the 1M view shows the last 21 of these
+const PRICE_DAYS = 64;          // fetched once per ticker: enough closes for 3M (63 moves = 64 closes)
+// Used only if an older API answer has no `ranges`; the API's `closes` value wins.
+const RANGE_FALLBACK = { "1M": { closes: 22, words: "1 month" }, "3M": { closes: 64, words: "3 months" } };
 const TICKER_RE = /^[A-Za-z0-9.\-]{1,10}$/;  // same pattern the API accepts
 const PANEL_ANIMATION_MS = 200; // must match the CSS transition in index.html
 
@@ -411,8 +413,9 @@ const panel = {
   ticker: null,          // ticker currently shown; late answers for other tickers are ignored
   opener: null,          // the link that opened the panel, to give focus back on close
   pushedHistory: false,  // true when OUR click added the history entry (so closing = history.back())
-  range: 63,             // 21 (1M) or 63 (3M) trading days
+  range: "3M",           // "1M" or "3M": a key of the API's `ranges`
   prices: null,          // last /prices list for the current ticker
+  ranges: null,          // last /prices `ranges` (change_pct per range, computed in Python)
 };
 const stockCache = new Map();   // ticker -> Promise of /api/stock/{ticker}
 const pricesCache = new Map();  // ticker -> Promise of /api/stock/{ticker}/prices
@@ -470,6 +473,7 @@ function openPanel(ticker) {
   if (ticker === panel.ticker) return;   // already showing it
   panel.ticker = ticker;
   panel.prices = null;
+  panel.ranges = null;
   showStock(ticker);
   showPrices(ticker);
 }
@@ -501,6 +505,7 @@ function hidePanel() {
   panel.opener = null;
   panel.pushedHistory = false;
   panel.prices = null;
+  panel.ranges = null;
 }
 
 /** Close button, Escape and backdrop all come here. */
@@ -565,10 +570,10 @@ function setupPanel() {
     });
   }
 
-  for (const button of document.querySelectorAll("#stock-panel [data-days]")) {
+  for (const button of document.querySelectorAll("#stock-panel [data-range]")) {
     button.addEventListener("click", () => {
-      panel.range = Number(button.dataset.days);
-      for (const other of document.querySelectorAll("#stock-panel [data-days]")) {
+      panel.range = button.dataset.range;
+      for (const other of document.querySelectorAll("#stock-panel [data-range]")) {
         other.setAttribute("aria-pressed", String(other === button));
       }
       if (panel.prices) drawPriceChart();
@@ -705,6 +710,27 @@ function chartPlaceholder(node) {
   document.getElementById("panel-chart-box").hidden = true;
   document.getElementById("panel-chart-note").hidden = true;
   document.getElementById("panel-chart-message").replaceChildren(...(node ? [node] : []));
+  renderRangeChange(null);   // no chart, no range number
+}
+
+/**
+ * "▲ +4.20% over 3M" next to the 1M/3M toggle. The number is the API's change_pct
+ * (Python did the math); null or missing means show nothing. textContent only.
+ */
+function renderRangeChange(range) {
+  const box = document.getElementById("panel-range-change");
+  const value = range ? range.change_pct : null;
+  if (!isNumber(value)) {
+    box.replaceChildren();
+    box.className = "text-sm tabular-nums font-semibold whitespace-nowrap";
+    return;
+  }
+  const parts = pctParts(value);
+  const words = (RANGE_FALLBACK[panel.range] || {}).words || panel.range;
+  box.className = `text-sm tabular-nums font-semibold whitespace-nowrap ${parts.cls}`;
+  const visible = el("span", "", `${parts.text} over ${panel.range}`);
+  visible.setAttribute("aria-hidden", "true");
+  box.replaceChildren(visible, el("span", "sr-only", `${parts.label} over ${words}`));
 }
 
 async function showPrices(ticker) {
@@ -730,6 +756,7 @@ async function showPrices(ticker) {
       return;
     }
     panel.prices = prices;
+    panel.ranges = data.ranges && typeof data.ranges === "object" ? data.ranges : null;
     drawPriceChart();
   } catch (error) {
     if (ticker !== panel.ticker) return;
@@ -742,7 +769,9 @@ async function showPrices(ticker) {
 }
 
 function drawPriceChart() {
-  const points = panel.prices.slice(-panel.range);   // 1M = the last 21 of the 63 we have
+  const range = panel.ranges ? panel.ranges[panel.range] : null;
+  const closes = range && isNumber(range.closes) ? range.closes : RANGE_FALLBACK[panel.range].closes;
+  const points = panel.prices.slice(-closes);   // 1M = the last 22 closes (21 daily moves), like month_pct
   const box = document.getElementById("panel-chart-box");
   const message = document.getElementById("panel-chart-message");
   const note = document.getElementById("panel-chart-note");
@@ -755,9 +784,10 @@ function drawPriceChart() {
   }
   message.replaceChildren();
   box.hidden = false;
+  renderRangeChange(range);
 
   // Fewer saved days than the range asks for: say so instead of pretending.
-  note.hidden = points.length >= panel.range;
+  note.hidden = points.length >= closes;
   note.textContent = `Only ${points.length} trading days saved so far.`;
 
   const canvas = document.getElementById("price-chart");
