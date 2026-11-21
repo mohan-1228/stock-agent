@@ -47,7 +47,7 @@ python main.py              # daily run (skips non-trading days); --force uses t
 python backfill.py --tickers AAPL,NVDA   # one-time ~5y price history into `prices`; no --tickers = all; --period 10y
 python tools.py get_movers period=week direction=losers n=5     # try a tool without AI
 export OLLAMA_MODEL=qwen3:4b && python agent.py "Which 5 stocks fell the most today?"
-python -m uvicorn api:app --reload                    # dashboard at http://127.0.0.1:8000
+python -m uvicorn api:app --reload                    # dashboard at http://127.0.0.1:8000 (Ask the AI uses OLLAMA_MODEL, default qwen3:4b)
 pytest                                                # must stay green (CI runs it on every PR too)
 ```
 
@@ -100,7 +100,7 @@ After editing the template or moving the project: uninstall, then install again.
 | launchd/local.stock-agent.daily.plist | LaunchAgent template (weekdays 6:05 pm); `__PROJECT_DIR__` is filled in at install, never commit real paths |
 | tools.py | `Toolbox` + `TOOL_SPECS` (the agent's tools) |
 | agent.py | `run_agent` loop, `LocalClient` (Ollama), `BedrockClient` (leave untouched) |
-| api.py | FastAPI app (to build) |
+| api.py | FastAPI app: read-only endpoints + `POST /api/ask` (one question at a time via `ASK_LOCK`, 180 s timeout, always the local Ollama model) |
 | news.py | News fetching/storage (to build) |
 | web/ | `index.html`, `app.js`, optional `style.css` (to build) |
 | tests/ | pytest; fake model (`FakeClient`, `FakeSession`) and synthetic DataFrames |
@@ -152,7 +152,7 @@ Rules: validate inputs (unknown ticker or period gives a clear 4xx), reuse `Tool
 - Tabs Day / Week / Month x Gainers / Losers: a horizontal bar chart plus a table (ticker, name, close, % change, market cap). Outliers get a visible "verify" badge.
 - Top companies table (sortable). Group cards (ai_stocks, semiconductors, banks, ...) showing average, median, up/down counts.
 - Click any company: a side panel opens with price line chart (1M / 3M), the day/week/month numbers, its news list, and an "Ask the AI about {ticker}" box.
-- A global "Ask the AI" box with a loading state (the local model is slow, 10 to 60 seconds) and a clear error message when Ollama is not running.
+- A global "Ask the AI" box with a loading state (the local model is slow, about 1 to 3 minutes) and a clear error message when Ollama is not running.
 - Responsive (works on a phone), keyboard-accessible, readable contrast in light and dark. Footer: "Information only, not investment advice."
 - Escape or `textContent` for all text from the API.
 
@@ -173,7 +173,10 @@ Rules: validate inputs (unknown ticker or period gives a clear 4xx), reuse `Tool
    - 4e. CI: GitHub Actions runs pytest (job `pytest`) on every PR to main and every push to main, with pinned versions from `constraints.txt`. *done*
    - 4f. Longer chart ranges (6M / 1Y / 5Y) in the company panel: 6M = 126, 1Y = 252, 5Y = 1260 trading days, each with `change_pct` from daily closes. `/prices` allows `days` up to 1261 and `step` 1 to 5; 5Y draws every 5th close (keeps the first and last). Short history: shorter chart + "Only N trading days saved", no number. *done*
    - 4g. Daily schedule on this Mac with launchd: `scripts/run_daily.sh` + LaunchAgent template, weekdays 6:05 pm Chicago, lock file, rotated log in `logs/`. No AWS. Installed and tested with `launchctl kickstart` on 2026-11-21 (Saturday: "market closed today. Skipping.", exit 0, 19 s). *done*
-5. `/api/ask` plus the Ask-the-AI box (local model), with loading and error states.
+5. `/api/ask` plus the Ask-the-AI box (local model), with loading and error states. *done*
+   - Body `{"question", "ticker"?}` returns `{"answer", "tools_used": [{"name", "input"}], "as_of", "seconds"}`. Errors: 422 bad input, 404 unknown ticker, **429 busy** (`Retry-After: 15`), 503 Ollama not running / model not pulled / no data, 504 over 180 s.
+   - The ticker is pattern-checked, must exist in the snapshot, and only our own symbol + name go into a labeled "App context" line in the system prompt; the question stays in the user message.
+   - 5b. Speed PR (follow-up, its own PR): measure, then try Ollama's `keep_alive` (keep the model loaded between questions) and a smaller `num_ctx` (now 8192). Report before/after timings for the same questions, like the index PR (4d).
 6. News module, `news` table, news endpoints/tools, news panel and policy/macro section.
 7. Quality pass: number checker for AI answers, 20 to 30 evaluation questions, README with screenshots.
 Each milestone is done only when: tests pass, the feature works in the browser (check it, do not assume), and the PR description is written.
@@ -193,7 +196,8 @@ Each milestone is done only when: tests pass, the feature works in the browser (
 - Range change (1M/3M in the panel) counts saved closes, not market days. If Yahoo skipped a day for a stock, its 1M window spans 22 saved closes that cover slightly more than 21 market days, while `month_pct` is null for that stock. Rare; a market calendar would fix it.
 - 5Y needs 1,261 saved closes (1260 trading days). Yahoo's "5y" backfill gave 1,255, so most stocks show the 5Y chart with an "Only N trading days saved" note and no 5Y number until about 6 more daily runs (around 2026-12-01), or after `python backfill.py --period 10y`.
 - Yahoo data can contain bad prints; moves of 20% or more in a day are flagged for verification.
-- An 8 GB machine runs only small models; long tool results make answers slow. Keep tool outputs short.
+- An 8 GB machine runs only small models; long tool results make answers slow. Keep tool outputs short. Measured with `qwen3:4b` on 2026-11-21: 64 s and 74 s per one-tool question from the command line, 44 s through `/api/ask`. Questions needing several tools can take 2 to 3 minutes.
+- A timed-out question keeps `ASK_LOCK` until the model's current reply ends (threads cannot be stopped), so the page can say "busy" for up to about 2 more minutes after a 504.
 - Local model answers can be imprecise (for example saying "return" without "average"); the system prompt asks it to say average or median.
 - Internet-less environments cannot reach Yahoo, so tests use fakes.
 - CI runs on Linux in UTC; the Mac is case-insensitive and on America/Chicago time. Watch for: wrong-case file names or imports, tests that need gitignored files (`data/`, `.env`), `date.today()` near midnight, different SQLite versions (assert on names, not exact query-plan wording). CI machines have internet, so CI does not catch an accidental network call in a test.

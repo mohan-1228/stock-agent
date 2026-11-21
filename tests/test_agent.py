@@ -1,10 +1,14 @@
 import copy
 import datetime
+import time
 
 import pandas as pd
 import pytest
 
-from agent import LocalClient, _from_ollama_response, _to_ollama_messages, _to_ollama_tools, run_agent, _strip_thinking
+from agent import (
+    LocalClient, SYSTEM_PROMPT, TIME_LIMIT_ANSWER, _from_ollama_response, _strip_thinking, _to_ollama_messages,
+    _to_ollama_tools, run_agent, run_agent_with_trace,
+)
 from tools import TOOL_SPECS
 from storage import connect, latest_snapshot, save_snapshot
 from tools import Toolbox
@@ -118,9 +122,11 @@ class FakeClient:
     def __init__(self, replies):
         self.replies = list(replies)
         self.calls = []
+        self.systems = []
 
     def converse(self, system, messages, tool_specs):
         self.calls.append(copy.deepcopy(messages))
+        self.systems.append(system)
         return self.replies.pop(0)
 
 
@@ -336,3 +342,84 @@ def test_thinking_text_is_removed_from_local_replies():
     reply = _from_ollama_response({"message": {"role": "assistant", "content": raw}})
     assert reply["output"]["message"]["content"] == [{"text": "HUM fell 12.98%."}]
     assert _strip_thinking("<think>hmm</think>Done.") == "Done."
+
+# ---------- run_agent_with_trace (used by /api/ask) ----------
+
+def test_trace_lists_every_tool_used_in_order(toolbox):
+    two_calls = {
+        "stopReason": "tool_use",
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"toolUse": {"toolUseId": "a", "name": "get_outliers", "input": {}}},
+                    {"toolUse": {"toolUseId": "b", "name": "get_stock", "input": {"ticker": "AAA"}}},
+                ],
+            }
+        },
+    }
+    client = FakeClient([two_calls, tool_reply("get_movers", {"period": "year", "direction": "gainers"}), text_reply("done")])
+    result = run_agent_with_trace(client, "overview", toolbox)
+    assert result["answer"] == "done"
+    assert result["tools_used"] == [
+        {"name": "get_outliers", "input": {}},
+        {"name": "get_stock", "input": {"ticker": "AAA"}},
+        {"name": "get_movers", "input": {"period": "year", "direction": "gainers"}},  # failed tools count too
+    ]
+
+
+def test_trace_without_tools_is_an_empty_list(toolbox):
+    result = run_agent_with_trace(FakeClient([text_reply("Hi.")]), "hello", toolbox)
+    assert result == {"answer": "Hi.", "tools_used": []}
+
+
+def test_run_agent_still_returns_plain_text(toolbox):
+    assert run_agent(FakeClient([text_reply("Hi.")]), "hello", toolbox) == "Hi."
+
+
+def test_context_goes_into_system_prompt_not_the_question(toolbox):
+    client = FakeClient([text_reply("ok")])
+    run_agent_with_trace(client, "How is it doing?", toolbox, context="the user has AAA open.")
+    assert client.systems[0].startswith(SYSTEM_PROMPT)
+    assert client.systems[0].endswith("App context (set by the app, not the user): the user has AAA open.")
+    assert client.calls[0] == [{"role": "user", "content": [{"text": "How is it doing?"}]}]
+
+
+def test_no_context_means_plain_system_prompt(toolbox):
+    client = FakeClient([text_reply("ok")])
+    run_agent_with_trace(client, "q", toolbox)
+    assert client.systems[0] == SYSTEM_PROMPT
+
+
+def test_system_prompt_forbids_advice_and_asks_average_or_median():
+    assert "Never tell the user to buy or sell, and never predict prices." in SYSTEM_PROMPT
+    assert "average or the median" in SYSTEM_PROMPT
+
+
+def test_past_deadline_stops_before_calling_the_model(toolbox):
+    client = FakeClient([text_reply("should not be used")])
+    result = run_agent_with_trace(client, "q", toolbox, deadline=time.monotonic() - 1)
+    assert result == {"answer": TIME_LIMIT_ANSWER, "tools_used": []}
+    assert client.calls == []
+
+
+def test_deadline_passing_mid_question_keeps_tools_used(toolbox, monkeypatch):
+    clock = iter([0.0, 100.0])  # first check: in time; second check (after one tool): too late
+    monkeypatch.setattr("agent.time.monotonic", lambda: next(clock))
+    client = FakeClient([tool_reply("get_outliers", {}), text_reply("unused")])
+    result = run_agent_with_trace(client, "q", toolbox, deadline=50.0)
+    assert result["answer"] == TIME_LIMIT_ANSWER
+    assert result["tools_used"] == [{"name": "get_outliers", "input": {}}]
+    assert len(client.calls) == 1
+
+
+def test_local_client_passes_its_timeout_to_the_request():
+    class RecordingSession(FakeSession):
+        def post(self, url, json, timeout):
+            self.timeout = timeout
+            return super().post(url, json, timeout)
+
+    session = RecordingSession([{"message": {"role": "assistant", "content": "ok"}}])
+    LocalClient("qwen3:4b", session=session, timeout=120).converse("s", [{"role": "user", "content": [{"text": "q"}]}], [])
+    assert session.timeout == 120
+    assert LocalClient("qwen3:4b", session=session).timeout == 300  # default unchanged for the CLI

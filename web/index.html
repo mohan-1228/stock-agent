@@ -74,6 +74,30 @@
       </div>
     </section>
 
+    <!-- Ask the AI (milestone 5). The answer is plain text from a local model: shown with textContent only. -->
+    <section aria-labelledby="ask-title" class="space-y-3 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+      <h2 id="ask-title" class="text-lg font-semibold">Ask the AI</h2>
+      <form id="ask-form" class="space-y-2" novalidate>
+        <label for="ask-input" id="ask-label" class="block text-sm text-slate-600 dark:text-slate-400">Ask about the saved data, for example "Which 5 stocks fell the most this week?"</label>
+        <textarea id="ask-input" name="question" rows="2" maxlength="500" required
+                  aria-describedby="ask-hint" class="ask-input"></textarea>
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <p id="ask-hint" class="text-xs text-slate-600 dark:text-slate-400">Enter to send, Shift+Enter for a new line. <span id="ask-count" class="tabular-nums">0 / 500</span></p>
+          <button id="ask-button" type="submit" class="ask-button">Ask</button>
+        </div>
+      </form>
+      <p id="ask-busy-note" class="text-xs text-slate-600 dark:text-slate-400" hidden>Another question is still running. Ask comes back when it finishes.</p>
+      <p id="ask-status" role="status" class="text-sm text-slate-700 dark:text-slate-300"></p>
+      <p id="ask-waiting" class="text-sm tabular-nums text-slate-600 dark:text-slate-400" aria-hidden="true" hidden></p>
+      <p id="ask-error" role="alert" class="text-sm text-red-700 dark:text-red-400"></p>
+      <div id="ask-result" class="space-y-2 rounded-lg bg-slate-50 p-4 dark:bg-slate-800/60" hidden>
+        <p id="ask-answer" tabindex="-1" class="whitespace-pre-wrap break-words outline-none"></p>
+        <p id="ask-meta" class="text-xs text-slate-600 dark:text-slate-400"></p>
+        <p id="ask-tools" class="break-words text-xs text-slate-600 dark:text-slate-400"></p>
+        <p class="text-xs font-medium text-slate-600 dark:text-slate-400">Information only, not investment advice.</p>
+      </div>
+    </section>
+
     <!-- Top movers -->
     <section aria-labelledby="movers-title" class="space-y-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
@@ -209,6 +233,30 @@
           <p class="text-xs text-slate-600 dark:text-slate-400">Prices adjusted for splits and dividends.</p>
         </section>
 
+        <!-- Ask about this stock. app.js fills in the ticker; the server checks it again. -->
+        <section id="panel-ask" aria-labelledby="panel-ask-title" class="space-y-3 border-t border-slate-200 pt-4 dark:border-slate-800">
+          <h3 id="panel-ask-title" class="font-semibold">Ask the AI</h3>
+          <form id="panel-ask-form" class="space-y-2" novalidate>
+            <label for="panel-ask-input" id="panel-ask-label" class="block text-sm text-slate-600 dark:text-slate-400">Ask about this stock</label>
+            <textarea id="panel-ask-input" name="question" rows="2" maxlength="500" required
+                      aria-describedby="panel-ask-hint" class="ask-input"></textarea>
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p id="panel-ask-hint" class="text-xs text-slate-600 dark:text-slate-400">Enter to send, Shift+Enter for a new line. <span id="panel-ask-count" class="tabular-nums">0 / 500</span></p>
+              <button id="panel-ask-button" type="submit" class="ask-button">Ask</button>
+            </div>
+          </form>
+          <p id="panel-ask-busy-note" class="text-xs text-slate-600 dark:text-slate-400" hidden>Another question is still running. Ask comes back when it finishes.</p>
+          <p id="panel-ask-status" role="status" class="text-sm text-slate-700 dark:text-slate-300"></p>
+          <p id="panel-ask-waiting" class="text-sm tabular-nums text-slate-600 dark:text-slate-400" aria-hidden="true" hidden></p>
+          <p id="panel-ask-error" role="alert" class="text-sm text-red-700 dark:text-red-400"></p>
+          <div id="panel-ask-result" class="space-y-2 rounded-lg bg-slate-50 p-4 dark:bg-slate-800/60" hidden>
+            <p id="panel-ask-answer" tabindex="-1" class="whitespace-pre-wrap break-words outline-none"></p>
+            <p id="panel-ask-meta" class="text-xs text-slate-600 dark:text-slate-400"></p>
+            <p id="panel-ask-tools" class="break-words text-xs text-slate-600 dark:text-slate-400"></p>
+            <p class="text-xs font-medium text-slate-600 dark:text-slate-400">Information only, not investment advice.</p>
+          </div>
+        </section>
+
         <p class="border-t border-slate-200 pt-4 text-xs text-slate-600 dark:border-slate-800 dark:text-slate-400">Information only, not investment advice.</p>
       </div>
     </section>
@@ -235,6 +283,17 @@
     /* Small group label inside the company panel. */
     .chip {
       @apply rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-300;
+    }
+    /* Ask the AI boxes. 16px text so phones do not zoom in when the box is tapped. */
+    .ask-input {
+      @apply block w-full resize-y rounded-lg border border-slate-300 bg-white px-3 py-2 text-base text-slate-900
+             placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500
+             dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100;
+    }
+    .ask-button {
+      @apply w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500
+             focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500
+             disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto;
     }
     /* Company panel slide-in: off-screen to the right until #panel-root gets .is-open. */
     #panel-backdrop { opacity: 0; transition: opacity 200ms ease-out; }
