@@ -25,6 +25,24 @@ CREATE TABLE IF NOT EXISTS prices (
 -- This index is sorted by ticker first: a price chart lookup jumps straight to that ticker.
 -- IF NOT EXISTS: an existing database gets it the next time it is opened (about 0.2 s, once).
 CREATE INDEX IF NOT EXISTS idx_prices_ticker_date ON prices(ticker, trade_date);
+-- News (milestone 6). One row per article (unique by URL), however many topics it belongs to.
+-- published_at is UTC "YYYY-MM-DDTHH:MM:SSZ", so text order = time order.
+CREATE TABLE IF NOT EXISTS news (
+    url          TEXT PRIMARY KEY,
+    title        TEXT NOT NULL,
+    source       TEXT,
+    published_at TEXT NOT NULL,
+    tags         TEXT NOT NULL DEFAULT ''
+);
+-- Which topics an article belongs to: a ticker ("NVDA", upper case) or "market" / "policy" (lower case).
+-- fetched_at = when we last collected it for that topic.
+CREATE TABLE IF NOT EXISTS news_topics (
+    url        TEXT NOT NULL,
+    topic      TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (url, topic)
+);
+CREATE INDEX IF NOT EXISTS idx_news_topics_topic ON news_topics(topic);
 """
 
 # The query behind price_series. A named constant so a test can check that it uses the index.
@@ -114,3 +132,50 @@ def price_series(conn, ticker, days=63) -> pd.DataFrame:
     """The last `days` saved closes for one ticker, oldest first (ready to draw as a line)."""
     df = pd.read_sql_query(PRICE_SERIES_SQL, conn, params=(ticker.upper(), int(days)))
     return df.iloc[::-1].reset_index(drop=True)
+
+
+def save_news(conn, items, topic, fetched_at) -> int:
+    """Store headlines for one topic. Safe to re-run: the same URL is overwritten, never duplicated.
+
+    items: dicts with url, title, source, published_at, tags (a list of words).
+    An empty list changes nothing, so a failed or empty fetch never wipes good headlines.
+    """
+    conn.executemany(
+        "INSERT OR REPLACE INTO news (url, title, source, published_at, tags) VALUES (?,?,?,?,?)",
+        [(i["url"], i["title"], i["source"], i["published_at"], ",".join(i["tags"])) for i in items],
+    )
+    conn.executemany(
+        "INSERT OR REPLACE INTO news_topics (url, topic, fetched_at) VALUES (?,?,?)",
+        [(i["url"], topic, fetched_at) for i in items],
+    )
+    conn.commit()
+    return len(items)
+
+
+def news_for_topic(conn, topic, limit=10) -> list[dict]:
+    """Newest saved headlines for one topic (a ticker, "market" or "policy")."""
+    rows = conn.execute(
+        "SELECT n.title, n.source, n.url, n.published_at, n.tags FROM news n "
+        "JOIN news_topics t ON t.url = n.url WHERE t.topic = ? "
+        "ORDER BY n.published_at DESC LIMIT ?",
+        (topic, int(limit)),
+    ).fetchall()
+    return [
+        {"title": title, "source": source, "url": url, "published_at": published,
+         "tags": [tag for tag in tags.split(",") if tag]}
+        for title, source, url, published, tags in rows
+    ]
+
+
+def news_fetched_at(conn, topic) -> str | None:
+    """When headlines for this topic were last collected (None if never)."""
+    return conn.execute("SELECT MAX(fetched_at) FROM news_topics WHERE topic = ?", (topic,)).fetchone()[0]
+
+
+def prune_news(conn, cutoff) -> int:
+    """Delete headlines published before `cutoff` (same UTC text format). Returns how many."""
+    old = "SELECT url FROM news WHERE published_at < ?"
+    conn.execute(f"DELETE FROM news_topics WHERE url IN ({old})", (cutoff,))
+    deleted = conn.execute("DELETE FROM news WHERE published_at < ?", (cutoff,)).rowcount
+    conn.commit()
+    return deleted

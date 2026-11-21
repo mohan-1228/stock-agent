@@ -28,7 +28,7 @@ The owner (Mohan) is a beginner learning AI agents first and AWS second. **Do no
 |---|---|---|
 | Language | Python 3.13 | type hints on new code |
 | Data | yfinance, pandas | unofficial Yahoo wrapper; all fetching stays in `data.py` so the source can be swapped |
-| Database | SQLite (`data/stocks.db`) | tables: `daily_returns`, `prices`, later `news` |
+| Database | SQLite (`data/stocks.db`) | tables: `daily_returns`, `prices`, `news` + `news_topics` |
 | Backend API | FastAPI + uvicorn | `api.py`; reuses `Toolbox` so API and agent share one set of logic |
 | Frontend | Static HTML + vanilla JavaScript in `web/` | no build step, no framework |
 | Styling | Tailwind CSS via the Play CDN script | free; dev-only CDN is fine for now. (Tailwind UI is a paid product, do not assume it) |
@@ -46,6 +46,8 @@ python -m pip install -r requirements.txt -c constraints.txt   # always `python 
 python main.py              # daily run (skips non-trading days); --force uses the latest trading day
 python backfill.py --tickers AAPL,NVDA   # one-time ~5y price history into `prices`; no --tickers = all; --period 10y
 python tools.py get_movers period=week direction=losers n=5     # try a tool without AI
+python news.py                # collect headlines (main.py also does this at the end); --tickers NVDA,AAPL
+python tools.py get_news ticker=NVDA                            # saved headlines, as the agent sees them
 export OLLAMA_MODEL=qwen3:4b && python agent.py "Which 5 stocks fell the most today?"
 python -m uvicorn api:app --reload                    # dashboard at http://127.0.0.1:8000 (Ask the AI uses OLLAMA_MODEL, default qwen3:4b)
 pytest                                                # must stay green (CI runs it on every PR too)
@@ -101,9 +103,10 @@ After editing the template or moving the project: uninstall, then install again.
 | tools.py | `Toolbox` + `TOOL_SPECS` (the agent's tools) |
 | agent.py | `run_agent` loop, `LocalClient` (Ollama), `BedrockClient` (leave untouched) |
 | api.py | FastAPI app: read-only endpoints + `POST /api/ask` (one question at a time via `ASK_LOCK`, 180 s timeout, always the local Ollama model) |
-| news.py | News fetching/storage (to build) |
+| news.py | News: adapters (`parse_yahoo_news`, `parse_rss`), keyword tags, never-hang fetching (daemon threads + time limits), `refresh_news`; SQL lives in storage.py |
+| .env.example | Template for `.env` (gitignored): `SEC_USER_AGENT`. Loaded by `config.load_env_file()` in main.py and news.py |
 | web/ | `index.html`, `app.js`, optional `style.css` (to build) |
-| tests/ | pytest; fake model (`FakeClient`, `FakeSession`) and synthetic DataFrames |
+| tests/ | pytest; fake model (`FakeClient`, `FakeSession`) and synthetic DataFrames; `tests/fixtures/` = real-shape samples with made-up text |
 | constraints.txt | Exact versions of all packages (from `pip freeze`); refresh on purpose |
 | .github/workflows/tests.yml | CI: runs pytest on GitHub's Linux machines |
 
@@ -178,6 +181,9 @@ Rules: validate inputs (unknown ticker or period gives a clear 4xx), reuse `Tool
    - The ticker is pattern-checked, must exist in the snapshot, and only our own symbol + name go into a labeled "App context" line in the system prompt; the question stays in the user message.
    - 5b. Speed PR (follow-up, its own PR): measure, then try Ollama's `keep_alive` (keep the model loaded between questions) and a smaller `num_ctx` (now 8192). Report before/after timings for the same questions, like the index PR (4d).
 6. News module, `news` table, news endpoints/tools, news panel and policy/macro section.
+   - 6a. Backend: `news.py`, tables `news` (unique by URL) + `news_topics` (url, topic = ticker / "market" / "policy"), `GET /api/news/{ticker}|market|policy` (read-only, never fetch), tools `get_news` / `get_market_news` / `get_policy_news`, prompt lines on untrusted headlines. Runs at the end of main.py, also on market-closed days; any news failure prints a line and never breaks the daily run. Sources: Yahoo per ticker + `^GSPC` for market; Federal Reserve RSS; SEC RSS only when `SEC_USER_AGENT` is set in `.env`. Never hangs: each fetch runs in a daemon thread with a 20 s wait, one retry, no new ticker after 300 s, and `exit_if_threads_stuck()` (os._exit) at the end. *done*
+   - 6b. UI: news list in the company panel, "Market & policy news" section on the page.
+   - Later: CNBC Top News RSS (after reading its terms), morning news refresh (second launchd schedule).
 7. Quality pass: number checker for AI answers, 20 to 30 evaluation questions, README with screenshots.
 Each milestone is done only when: tests pass, the feature works in the browser (check it, do not assume), and the PR description is written.
 
@@ -196,6 +202,10 @@ Each milestone is done only when: tests pass, the feature works in the browser (
 - Range change (1M/3M in the panel) counts saved closes, not market days. If Yahoo skipped a day for a stock, its 1M window spans 22 saved closes that cover slightly more than 21 market days, while `month_pct` is null for that stock. Rare; a market calendar would fix it.
 - 5Y needs 1,261 saved closes (1260 trading days). Yahoo's "5y" backfill gave 1,255, so most stocks show the 5Y chart with an "Only N trading days saved" note and no 5Y number until about 6 more daily runs (around 2026-12-01), or after `python backfill.py --period 10y`.
 - Yahoo data can contain bad prints; moves of 20% or more in a day are flagged for verification.
+- Yahoo's per-ticker news often includes loosely related stories (for example a Verizon dividend story under NVDA) and opinion headlines ("Is X a Buy?", "I'd Buy More Now"). They are shown as third-party text; the agent must not repeat them as advice.
+- The Federal Reserve feed lists about 20 releases, some older than `NEWS_KEEP_DAYS` (30); those are deleted right after saving, so fewer than 20 stay.
+- The SEC asks automated tools to identify themselves (`SEC_USER_AGENT="Your Name you@example.com"` in `.env`, their sample: "Sample Company Name AdminContact@<sample company domain>.com"); without it the SEC feed is skipped with a log line.
+- An abandoned news thread (a fetch that never answered) keeps running until the process ends; `exit_if_threads_stuck()` then exits with os._exit, which skips Python's exit-time cleanup. All data is committed and the database closed before that.
 - An 8 GB machine runs only small models; long tool results make answers slow. Keep tool outputs short. Measured with `qwen3:4b` on 2026-11-21: 64 s and 74 s per one-tool question from the command line, 44 s through `/api/ask`. Questions needing several tools can take 2 to 3 minutes.
 - A timed-out question keeps `ASK_LOCK` until the model's current reply ends (threads cannot be stopped), so the page can say "busy" for up to about 2 more minutes after a 504.
 - Local model answers can be imprecise (for example saying "return" without "average"); the system prompt asks it to say average or median.

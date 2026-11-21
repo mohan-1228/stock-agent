@@ -1,0 +1,65 @@
+[
+  {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "content": {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "contentType": "STORY",
+      "title": "Example Chip Maker Beats Quarterly Earnings Estimates",
+      "description": "",
+      "summary": "A made-up summary for tests.",
+      "pubDate": "2026-11-21T16:23:54Z",
+      "displayTime": "2026-11-21T16:23:54Z",
+      "isHosted": true,
+      "provider": {"displayName": "Yahoo Finance", "url": "https://finance.yahoo.com/"},
+      "canonicalUrl": {"url": "https://finance.yahoo.com/markets/article/example-chip-maker-earnings-1.html"},
+      "clickThroughUrl": {"url": "https://finance.yahoo.com/markets/article/example-chip-maker-earnings-1.html"},
+      "thumbnail": null,
+      "previewUrl": null,
+      "finance": {"premiumFinance": {"isPremiumNews": false}, "stockTickers": [{"symbol": "NVDA"}, {"symbol": "^GSPC"}]}
+    }
+  },
+  {
+    "id": "00000000-0000-4000-8000-000000000002",
+    "content": {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "contentType": "VIDEO",
+      "title": "  Fed   officials signal\n a pause in rate hikes  ",
+      "pubDate": "2026-11-21T12:30:15Z",
+      "provider": {"displayName": "Example Wire"},
+      "canonicalUrl": null,
+      "clickThroughUrl": {"url": "https://www.example.com/video/fed-pause-2"},
+      "finance": {"stockTickers": [{"symbol": "NVDA"}]}
+    }
+  },
+  {
+    "id": "00000000-0000-4000-8000-000000000003",
+    "content": {
+      "contentType": "STORY",
+      "title": "Item with an unsafe link is dropped",
+      "pubDate": "2026-11-21T10:00:00Z",
+      "provider": {"displayName": "Example"},
+      "canonicalUrl": {"url": "javascript:alert(1)"},
+      "clickThroughUrl": null
+    }
+  },
+  {
+    "id": "00000000-0000-4000-8000-000000000004",
+    "content": {
+      "contentType": "STORY",
+      "title": "Item without a time is dropped",
+      "pubDate": null,
+      "provider": {"displayName": "Example"},
+      "canonicalUrl": {"url": "https://www.example.com/no-time-4"}
+    }
+  },
+  {
+    "id": "00000000-0000-4000-8000-000000000005",
+    "content": {
+      "contentType": "STORY",
+      "title": "Duplicate of the first item",
+      "pubDate": "2026-11-21T09:00:00Z",
+      "provider": {"displayName": "Yahoo Finance"},
+      "canonicalUrl": {"url": "https://finance.yahoo.com/markets/article/example-chip-maker-earnings-1.html"}
+    }
+  }
+]

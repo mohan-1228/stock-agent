@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 import api
 import config
-from storage import connect, save_prices, save_snapshot
+from storage import connect, save_news, save_prices, save_snapshot
 from tools import Toolbox
 
 NAMES = {"AAA": "Alpha Inc", "BBB": "Beta Bank", "CCC": "Gamma Corp", "DDD": "Delta Ltd"}
@@ -503,3 +503,68 @@ def test_page_has_both_ask_boxes_and_limits_match_the_server():
     browser_ms = int(re.search(r"const ASK_TIMEOUT_MS = (\d+);", script).group(1))
     assert browser_ms > api.ASK_TIMEOUT_SECONDS * 1000  # the server's clear 504 arrives before the browser gives up
     assert "The local model usually takes 1 to 3 minutes." in script
+
+
+# ---------- news endpoints (read-only; only news.py fetches) ----------
+
+
+def _headline(url, title, published="2026-11-21T10:00:00Z", tags=()):
+    return {"url": url, "title": title, "source": "Example", "published_at": published, "tags": list(tags)}
+
+
+@pytest.fixture
+def news_client(client, db_path):
+    conn = connect(db_path)
+    save_news(conn, [_headline(f"https://e.com/aaa{i}", f"AAA story {i}", f"2026-11-21T{10 + i:02d}:00:00Z")
+                     for i in range(12)], "AAA", "2026-11-22T00:00:00Z")
+    save_news(conn, [_headline("https://e.com/m", "Market story")], "market", "2026-11-22T00:00:00Z")
+    save_news(conn, [_headline("https://e.com/p", "Fed holds rates", tags=["policy"])], "policy", "2026-11-22T00:00:00Z")
+    conn.close()
+    return client
+
+
+def test_news_for_a_ticker_newest_first(news_client):
+    body = news_client.get("/api/news/aaa?n=3").json()
+    assert body["topic"] == "AAA" and body["as_of"] == "2026-11-20"
+    assert body["fetched_at"] == "2026-11-22T00:00:00Z"
+    assert [i["title"] for i in body["items"]] == ["AAA story 11", "AAA story 10", "AAA story 9"]
+    assert set(body["items"][0]) == {"title", "source", "url", "published_at", "tags"}
+    assert "not investment advice" in body["note"]
+
+
+def test_news_default_is_8_and_max_is_20(news_client):
+    assert len(news_client.get("/api/news/AAA").json()["items"]) == 8
+    assert len(news_client.get("/api/news/AAA?n=20").json()["items"]) == 12
+    assert news_client.get("/api/news/AAA?n=21").status_code == 422
+    assert news_client.get("/api/news/AAA?n=0").status_code == 422
+
+
+def test_market_and_policy_routes_are_not_read_as_tickers(news_client):
+    market = news_client.get("/api/news/market").json()
+    policy = news_client.get("/api/news/policy").json()
+    assert market["topic"] == "market" and [i["title"] for i in market["items"]] == ["Market story"]
+    assert policy["topic"] == "policy" and policy["items"][0]["tags"] == ["policy"]
+
+
+def test_news_unknown_ticker_is_404_and_bad_pattern_is_422(news_client):
+    assert news_client.get("/api/news/ZZZZ").status_code == 404
+    assert news_client.get("/api/news/MARKET").status_code == 404  # upper case is a ticker, and not ours
+    assert news_client.get("/api/news/bad%20ticker").status_code == 422
+
+
+def test_news_known_ticker_without_saved_news_is_empty_with_reason(news_client):
+    body = news_client.get("/api/news/BBB").json()
+    assert body["items"] == [] and body["fetched_at"] is None
+    assert "collected for the top" in body["note"]
+
+
+def test_news_endpoints_never_fetch(news_client, monkeypatch):
+    import news
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("the API must not fetch news")
+
+    monkeypatch.setattr(news, "fetch_yahoo_news", no_network)
+    monkeypatch.setattr(news, "fetch_rss", no_network)
+    for path in ("/api/news/AAA", "/api/news/CCC", "/api/news/market", "/api/news/policy"):
+        assert news_client.get(path).status_code == 200

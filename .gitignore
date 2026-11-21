@@ -5,3 +5,4 @@ reports/
 run.log
 .venv/
 logs/
+.env
