@@ -2,9 +2,9 @@
 import pandas as pd
 import pytest
 
-from backfill import parse_tickers, print_summary, run_backfill, unknown_tickers
+from backfill import parse_tickers, plural, print_summary, run_backfill, unknown_tickers
 from data import fetch_closes_in_batches, split_into_batches
-from storage import connect
+from storage import connect, save_prices
 
 DAYS = pd.to_datetime(["2026-11-17", "2026-11-18", "2026-11-19"])
 
@@ -157,7 +157,7 @@ def test_ticker_without_data_is_reported_and_short_history_is_not(tmp_path):
     out = []
     print_summary(summary, 4, "5y", log=out.append)
     assert "Tickers with data: 2 of 4" in out
-    assert any(line.startswith("Info: 1 tickers have less than the full 5y") for line in out)
+    assert any(line.startswith("Info: 1 ticker has less than the full 5y") for line in out)
 
 
 def test_backfill_never_touches_daily_returns(tmp_path):
@@ -166,6 +166,41 @@ def test_backfill_never_touches_daily_returns(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM daily_returns").fetchone()[0] == 0
 
 
+def test_plural():
+    assert plural(1, "row") == "1 row"
+    assert plural(5, "row") == "5 rows"
+
+
 def test_parse_and_unknown_tickers():
     assert parse_tickers(" aapl, NVDA,,aapl ") == ["AAPL", "NVDA"]
     assert unknown_tickers(["AAPL", "ZZZZ"], ["AAPL", "NVDA"]) == ["ZZZZ"]
+
+
+def test_ticker_with_very_little_history_gets_warning_not_recent_listing_info(tmp_path):
+    def fetch(batch, period):
+        days = pd.bdate_range("2021-11-19", "2026-11-19")
+        df = pd.DataFrame({"OLD": 1.0, "NEW": 2.0, "KVUE": float("nan")}, index=days)
+        df.loc[df.index < "2025-06-02", "NEW"] = float("nan")   # recent listing: plenty of rows
+        df.loc[df.index[:5], "KVUE"] = 3.0                      # only 5 rows: stopped trading?
+        return df[batch]
+
+    conn = connect(tmp_path / "t.db")
+    summary = run_backfill(conn, ["OLD", "NEW", "KVUE"], "5y", 100, 0,
+                           fetch=fetch, sleep=FakeSleep(), log=quiet)
+    assert summary.very_little_history() == ["KVUE"]
+    assert summary.short_history() == ["NEW"]                    # KVUE is not called a recent listing
+
+    out = []
+    print_summary(summary, 3, "5y", log=out.append)
+    assert "Warning: very little history, may have stopped trading: KVUE (5 rows)" in out
+    assert any(line.startswith("Info: 1 ticker has less than the full 5y") for line in out)
+
+
+def test_very_little_history_counts_all_saved_rows_not_just_this_run(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    old = pd.DataFrame({"AAA": [1.0] * 40}, index=pd.bdate_range("2026-01-01", periods=40))
+    save_prices(conn, old)                                       # 40 rows saved earlier
+    summary = run_backfill(conn, ["AAA"], "1mo", 100, 0,
+                           fetch=FakeFetch(), sleep=FakeSleep(), log=quiet)  # only 3 new days
+    assert summary.saved_rows["AAA"] == 43
+    assert summary.very_little_history() == []

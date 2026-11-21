@@ -24,24 +24,42 @@ from universe import load_universe
 # and a missing bar or two on the very first days.
 SHORT_HISTORY_SLACK_DAYS = 7
 
+# A ticker with fewer saved rows than this (in the whole prices table) has so little history
+# that it may have stopped trading, e.g. KVUE after its acquisition. Warned about, not "recent listing".
+MIN_HISTORY_ROWS = 30
+
 
 @dataclass
 class BackfillSummary:
     """Everything the end-of-run summary prints."""
     rows_saved: int = 0
     first_dates: dict = field(default_factory=dict)  # ticker -> first date with data
+    saved_rows: dict = field(default_factory=dict)   # ticker -> rows in the prices table after saving
     last_date: object = None                           # newest date seen in any batch
     no_data: list = field(default_factory=list)      # batch worked, but this ticker had nothing
     failed: list = field(default_factory=list)       # in a batch that failed even after the retry
     failed_reasons: list = field(default_factory=list)
 
+    def very_little_history(self):
+        """Tickers with fewer than MIN_HISTORY_ROWS saved rows in total: may have stopped trading."""
+        return sorted(t for t, n in self.saved_rows.items() if n < MIN_HISTORY_ROWS)
+
     def short_history(self):
-        """Tickers with less than the full period (normal for recent listings; info only)."""
+        """Tickers with less than the full period (normal for recent listings; info only).
+
+        Tickers with very little history are left out: they get a warning instead.
+        """
         if not self.first_dates:
             return []
         earliest = min(self.first_dates.values())
         cutoff = earliest + timedelta(days=SHORT_HISTORY_SLACK_DAYS)
-        return sorted(t for t, d in self.first_dates.items() if d > cutoff)
+        too_few = set(self.very_little_history())
+        return sorted(t for t, d in self.first_dates.items() if d > cutoff and t not in too_few)
+
+
+def plural(n, word):
+    """plural(1, "row") -> "1 row", plural(5, "row") -> "5 rows"."""
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
 def parse_tickers(text):
@@ -58,6 +76,11 @@ def unknown_tickers(requested, known):
     """Requested tickers that are not in tickers.csv (we warn but still fetch them)."""
     known = set(known)
     return [t for t in requested if t not in known]
+
+
+def count_saved_rows(conn, ticker):
+    """How many closes the prices table holds for one ticker (all dates, not just this run)."""
+    return conn.execute("SELECT COUNT(*) FROM prices WHERE ticker = ?", (ticker,)).fetchone()[0]
 
 
 def run_backfill(conn, tickers, period, batch_size, pause_seconds,
@@ -86,6 +109,7 @@ def run_backfill(conn, tickers, period, batch_size, pause_seconds,
                 summary.no_data.append(ticker)
             else:
                 summary.first_dates[ticker] = values.index[0].date()
+                summary.saved_rows[ticker] = count_saved_rows(conn, ticker)
                 last = values.index[-1].date()
                 if summary.last_date is None or last > summary.last_date:
                     summary.last_date = last
@@ -101,9 +125,14 @@ def print_summary(summary, n_requested, period, log=print):
     if summary.first_dates:
         log(f"Date range: {min(summary.first_dates.values())} to {summary.last_date}")
     log(f"Tickers with data: {len(summary.first_dates)} of {n_requested}")
+    few = summary.very_little_history()
+    if few:
+        details = ", ".join(f"{t} ({plural(summary.saved_rows[t], 'row')})" for t in few)
+        log(f"Warning: very little history, may have stopped trading: {details}")
     short = summary.short_history()
     if short:
-        log(f"Info: {len(short)} tickers have less than the full {period} of history "
+        has = "ticker has" if len(short) == 1 else "tickers have"
+        log(f"Info: {len(short)} {has} less than the full {period} of history "
             f"(normal for recent listings), e.g. {', '.join(short[:10])}")
     if summary.no_data:
         log(f"No data returned ({len(summary.no_data)}): {', '.join(summary.no_data)}")
