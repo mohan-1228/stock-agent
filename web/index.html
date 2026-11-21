@@ -49,7 +49,7 @@
     </div>
   </header>
 
-  <main id="main" class="mx-auto max-w-6xl space-y-10 px-4 py-8 sm:px-6">
+  <main id="main" tabindex="-1" class="mx-auto max-w-6xl space-y-10 px-4 py-8 outline-none sm:px-6">
 
     <!-- Shown only when the API cannot be reached at all. -->
     <div id="global-error" role="alert" hidden
@@ -158,6 +158,54 @@
     </div>
   </footer>
 
+  <!-- Company side panel. Hidden until a row is clicked or the URL hash is #/stock/TICKER.
+       It sits outside header/main/footer so those can be made "inert" while it is open. -->
+  <div id="panel-root" class="fixed inset-0 z-40" hidden>
+    <!-- Dim layer behind the panel. Clicking it closes the panel. -->
+    <div id="panel-backdrop" class="absolute inset-0 bg-slate-900/50"></div>
+
+    <section id="stock-panel" role="dialog" aria-modal="true" aria-labelledby="panel-title panel-name"
+             class="absolute inset-y-0 right-0 flex w-full flex-col overflow-y-auto bg-white shadow-2xl sm:max-w-md dark:bg-slate-900">
+      <!-- Header stays pinned at the top so the close button is always reachable (important on phones). -->
+      <div class="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-slate-200 bg-white px-5 py-4 dark:border-slate-800 dark:bg-slate-900">
+        <div class="min-w-0">
+          <h2 class="text-xl font-semibold tracking-tight">
+            <span id="panel-title"></span><span id="panel-badge"></span>
+          </h2>
+          <p id="panel-name" class="truncate text-sm text-slate-600 dark:text-slate-400"></p>
+        </div>
+        <button id="panel-close" type="button" aria-label="Close panel"
+                class="shrink-0 rounded-lg border border-slate-300 px-3 py-1.5 text-lg leading-none hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:border-slate-700 dark:hover:bg-slate-800">
+          <span aria-hidden="true">✕</span>
+        </button>
+      </div>
+
+      <div class="space-y-6 px-5 py-5">
+        <!-- Stats: close, market cap, as-of date, day/week/month, groups. Filled by app.js. -->
+        <div id="panel-stats" tabindex="-1" class="outline-none" aria-live="polite"></div>
+
+        <!-- Price chart -->
+        <section aria-labelledby="panel-chart-title" class="space-y-3">
+          <div class="flex items-center justify-between gap-3">
+            <h3 id="panel-chart-title" class="font-semibold">Price</h3>
+            <div role="group" aria-label="Chart range" class="inline-flex rounded-lg bg-slate-200 p-1 dark:bg-slate-800">
+              <button type="button" data-days="21" aria-pressed="false" class="tab" aria-label="1 month (about 21 trading days)">1M</button>
+              <button type="button" data-days="63" aria-pressed="true" class="tab" aria-label="3 months (about 63 trading days)">3M</button>
+            </div>
+          </div>
+          <div id="panel-chart-box" class="relative h-64" hidden>
+            <canvas id="price-chart" role="img" aria-label="Price line chart"></canvas>
+          </div>
+          <div id="panel-chart-message" tabindex="-1" class="outline-none" aria-live="polite"></div>
+          <p id="panel-chart-note" class="text-xs text-slate-600 dark:text-slate-400" hidden></p>
+          <p class="text-xs text-slate-600 dark:text-slate-400">Prices adjusted for splits and dividends.</p>
+        </section>
+
+        <p class="border-t border-slate-200 pt-4 text-xs text-slate-600 dark:border-slate-800 dark:text-slate-400">Information only, not investment advice.</p>
+      </div>
+    </section>
+  </div>
+
   <style type="text/tailwindcss">
     /* Shared look for the Day/Week/Month tabs and Gainers/Losers buttons. */
     .tab {
@@ -176,6 +224,18 @@
     .up   { @apply text-green-700 dark:text-green-400; }
     .down { @apply text-red-700 dark:text-red-400; }
     .flat { @apply text-slate-600 dark:text-slate-400; }
+    /* Small group label inside the company panel. */
+    .chip {
+      @apply rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-300;
+    }
+    /* Company panel slide-in: off-screen to the right until #panel-root gets .is-open. */
+    #panel-backdrop { opacity: 0; transition: opacity 200ms ease-out; }
+    #stock-panel { transform: translateX(100%); transition: transform 200ms ease-out; }
+    #panel-root.is-open #panel-backdrop { opacity: 1; }
+    #panel-root.is-open #stock-panel { transform: translateX(0); }
+    @media (prefers-reduced-motion: reduce) {
+      #panel-backdrop, #stock-panel { transition: none; }
+    }
   </style>
 
   <script src="/app.js"></script>

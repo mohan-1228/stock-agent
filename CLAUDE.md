@@ -113,7 +113,8 @@ Rules: validate inputs (unknown ticker or period gives a clear 4xx), reuse `Tool
 1. Save daily price history (`prices` table, `save_prices`, `price_series`, called from `main.py`). *done*
 2. `api.py` with the read-only endpoints above, tested with FastAPI TestClient. *done*
 3. Dashboard v1: tabs, bar charts, tables, outlier badges, light/dark. *done*
-4. Company side panel with price line chart; groups and top-companies sections.
+4. Company side panel with price line chart; groups and top-companies sections. *done*
+   - 4b. Range change (`change_pct`) returned by `/api/stock/{ticker}/prices`, so the panel can show e.g. "+4.2% over 3M" without doing math in JavaScript. Separate PR after milestone 4.
 5. `/api/ask` plus the Ask-the-AI box (local model), with loading and error states.
 6. News module, `news` table, news endpoints/tools, news panel and policy/macro section.
 7. Quality pass: GitHub Actions running pytest, number checker for AI answers, 20 to 30 evaluation questions, README with screenshots.
@@ -126,6 +127,8 @@ Each milestone is done only when: tests pass, the feature works in the browser (
 
 ## Known issues
 - KVUE returns no data (likely delisted/merged); review the ticker list occasionally.
+- Saved prices are split- and dividend-adjusted as of the day they were last downloaded. Each daily run only re-downloads the last ~3 months, so older rows can keep an outdated adjustment after a split or dividend. This matters if we chart ranges longer than about 3 months.
+- KVUE has only 1 saved price (likely delisted): check its last date and remove it from the ticker list.
 - Yahoo data can contain bad prints; moves of 20% or more in a day are flagged for verification.
 - An 8 GB machine runs only small models; long tool results make answers slow. Keep tool outputs short.
 - Local model answers can be imprecise (for example saying "return" without "average"); the system prompt asks it to say average or median.

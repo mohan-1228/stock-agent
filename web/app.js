@@ -1,4 +1,4 @@
-// Stock Agent dashboard (milestone 3).
+// Stock Agent dashboard (milestones 3 and 4).
 // Plain JavaScript, no build step. Every piece of text that comes from the API is put on
 // the page with textContent (never innerHTML), so a strange company name can never run as code.
 "use strict";
@@ -110,6 +110,24 @@ function messageRow(tbody, columns, text, isError) {
   tbody.replaceChildren(tr);
 }
 
+/** A table row for one company. data-ticker lets a click anywhere on the row open the panel. */
+function companyRow(ticker) {
+  const tr = el("tr", "cursor-pointer border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/60");
+  tr.dataset.ticker = ticker;
+  return tr;
+}
+
+/** The ticker cell: a real link to #/stock/TICKER, so Tab reaches it and Enter opens the panel. */
+function tickerCell(ticker) {
+  const td = el("td", "px-3 py-2 font-semibold whitespace-nowrap");
+  const link = el("a", "rounded underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500", ticker);
+  link.href = `#/stock/${encodeURIComponent(ticker)}`;
+  link.setAttribute("aria-label", `${ticker}: open details`);
+  td.append(link);
+  if (state.outliers.has(ticker)) td.append(verifyBadge());
+  return td;
+}
+
 /** Grey shimmer rows while a table loads. */
 function skeletonRows(tbody, columns, rows) {
   const fragment = document.createDocumentFragment();
@@ -198,11 +216,9 @@ function renderMoversTable(tbody, rows, period) {
   }
   const fragment = document.createDocumentFragment();
   rows.forEach((row, index) => {
-    const tr = el("tr", "border-b border-slate-100 last:border-0 dark:border-slate-800");
+    const tr = companyRow(row.ticker);
     tr.append(el("td", "px-3 py-2 text-right tabular-nums text-slate-500 dark:text-slate-400", index + 1));
-    const tickerCell = el("td", "px-3 py-2 font-semibold whitespace-nowrap", row.ticker);
-    if (state.outliers.has(row.ticker)) tickerCell.append(verifyBadge());
-    tr.append(tickerCell);
+    tr.append(tickerCell(row.ticker));
     tr.append(el("td", "max-w-[12rem] truncate px-3 py-2 text-slate-700 dark:text-slate-300", row.name));
     tr.append(el("td", "px-3 py-2 text-right tabular-nums", money(row.close)));
     tr.append(pctCell(row[`${period}_pct`]));
@@ -293,11 +309,9 @@ async function loadCompanies() {
     }
     const fragment = document.createDocumentFragment();
     rows.forEach((row, index) => {
-      const tr = el("tr", "border-b border-slate-100 last:border-0 dark:border-slate-800");
+      const tr = companyRow(row.ticker);
       tr.append(el("td", "px-3 py-2 text-right tabular-nums text-slate-500 dark:text-slate-400", index + 1));
-      const tickerCell = el("td", "px-3 py-2 font-semibold whitespace-nowrap", row.ticker);
-      if (state.outliers.has(row.ticker)) tickerCell.append(verifyBadge());
-      tr.append(tickerCell);
+      tr.append(tickerCell(row.ticker));
       tr.append(el("td", "max-w-[14rem] truncate px-3 py-2 text-slate-700 dark:text-slate-300", row.name));
       tr.append(el("td", "px-3 py-2 text-right tabular-nums", money(row.close)));
       tr.append(el("td", "px-3 py-2 text-right tabular-nums whitespace-nowrap", marketCap(row.market_cap_billions)));
@@ -382,6 +396,424 @@ function renderGroups() {
   grid.replaceChildren(fragment);
 }
 
+// ---------- company side panel ----------
+//
+// One rule drives everything: the URL hash. "#/stock/NVDA" means "panel open on NVDA",
+// anything else means "panel closed". Clicks, the back button, a reload and a shared link
+// all change the hash, and one listener (route) reacts to it.
+
+const PRICE_DAYS = 63;          // fetched once per ticker; the 1M view shows the last 21 of these
+const TICKER_RE = /^[A-Za-z0-9.\-]{1,10}$/;  // same pattern the API accepts
+const PANEL_ANIMATION_MS = 200; // must match the CSS transition in index.html
+
+const panel = {
+  open: false,
+  ticker: null,          // ticker currently shown; late answers for other tickers are ignored
+  opener: null,          // the link that opened the panel, to give focus back on close
+  pushedHistory: false,  // true when OUR click added the history entry (so closing = history.back())
+  range: 63,             // 21 (1M) or 63 (3M) trading days
+  prices: null,          // last /prices list for the current ticker
+};
+const stockCache = new Map();   // ticker -> Promise of /api/stock/{ticker}
+const pricesCache = new Map();  // ticker -> Promise of /api/stock/{ticker}/prices
+let priceChart = null;
+let closeTimer = null;
+let inertNodes = [];
+
+/** Same idea as getMovers: reuse an answer we already have, forget failures so Retry works. */
+function cachedFetch(cache, key, url) {
+  if (!cache.has(key)) {
+    const request = fetchJson(url);
+    request.catch(() => cache.delete(key));
+    cache.set(key, request);
+  }
+  return cache.get(key);
+}
+
+/** "2026-11-20" -> "Nov 20" for the chart's x axis. */
+function shortDate(isoDate) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate));
+  if (!match) return String(isoDate);
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/** Ticker from the hash, or null when the hash is not a stock link. */
+function tickerFromHash() {
+  const match = /^#\/stock\/(.*)$/.exec(window.location.hash);
+  if (!match) return null;
+  try { return decodeURIComponent(match[1]).trim().toUpperCase(); } catch (e) { return ""; }
+}
+
+function route() {
+  const ticker = tickerFromHash();
+  if (ticker === null) hidePanel();
+  else openPanel(ticker);
+}
+
+// ----- open / close -----
+
+function openPanel(ticker) {
+  const root = document.getElementById("panel-root");
+  if (!panel.open) {
+    clearTimeout(closeTimer);             // reopened during the slide-out: keep it visible
+    root.hidden = false;
+    // Make everything behind the panel unclickable and un-tabbable while it is open.
+    inertNodes = Array.from(document.body.children).filter(
+      (node) => node !== root && !["SCRIPT", "STYLE"].includes(node.tagName));
+    for (const node of inertNodes) node.inert = true;
+    document.body.style.overflow = "hidden";   // the page behind should not scroll
+    requestAnimationFrame(() => root.classList.add("is-open"));  // next frame, so the slide animates
+    panel.open = true;
+    document.getElementById("panel-close").focus({ preventScroll: true });
+  }
+  if (ticker === panel.ticker) return;   // already showing it
+  panel.ticker = ticker;
+  panel.prices = null;
+  showStock(ticker);
+  showPrices(ticker);
+}
+
+function hidePanel() {
+  if (!panel.open) return;
+  const root = document.getElementById("panel-root");
+  root.classList.remove("is-open");
+  for (const node of inertNodes) node.inert = false;
+  inertNodes = [];
+  document.body.style.overflow = "";
+  // Wait for the slide-out, then hide it and free the chart.
+  closeTimer = setTimeout(() => {
+    root.hidden = true;
+    destroyPriceChart();
+  }, PANEL_ANIMATION_MS);
+
+  // Give focus back to the row that opened the panel. If the table was redrawn meanwhile,
+  // look for a row with the same ticker; otherwise land on the main content.
+  let target = panel.opener && panel.opener.isConnected ? panel.opener : null;
+  if (!target) {
+    const row = Array.from(document.querySelectorAll("tr[data-ticker]")).find((tr) => tr.dataset.ticker === panel.ticker);
+    target = row ? row.querySelector("a") : document.getElementById("main");
+  }
+  target.focus({ preventScroll: false });
+
+  panel.open = false;
+  panel.ticker = null;
+  panel.opener = null;
+  panel.pushedHistory = false;
+  panel.prices = null;
+}
+
+/** Close button, Escape and backdrop all come here. */
+function requestClose() {
+  if (panel.pushedHistory) {
+    history.back();            // removes our history entry; the hashchange then calls hidePanel
+  } else {
+    // Opened from a reload or a shared link: going back would leave the page, so clear the hash in place.
+    history.replaceState(null, "", window.location.pathname + window.location.search);
+    hidePanel();
+  }
+}
+
+/** Tab and Shift+Tab wrap around inside the panel instead of leaving it. */
+function trapTab(event) {
+  const dialog = document.getElementById("stock-panel");
+  const focusable = Array.from(dialog.querySelectorAll('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+    .filter((node) => node.getClientRects().length > 0);   // skip hidden ones
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (!dialog.contains(active)) {
+    event.preventDefault();
+    first.focus();
+  } else if (event.shiftKey && active === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function setupPanel() {
+  window.addEventListener("hashchange", route);
+  document.getElementById("panel-close").addEventListener("click", requestClose);
+  document.getElementById("panel-backdrop").addEventListener("click", requestClose);
+  document.addEventListener("keydown", (event) => {
+    if (!panel.open) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      requestClose();
+    } else if (event.key === "Tab") {
+      trapTab(event);
+    }
+  });
+
+  // Rows: the ticker link changes the hash by itself; a click elsewhere on the row does it for us.
+  for (const id of ["movers-body", "companies-body"]) {
+    document.getElementById(id).addEventListener("click", (event) => {
+      const row = event.target.closest("tr[data-ticker]");
+      if (!row) return;
+      const link = row.querySelector("a");
+      const clickedLink = event.target.closest("a");
+      // Ctrl/Cmd/Shift-click on the link opens a new tab: leave that to the browser.
+      if (clickedLink && (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0)) return;
+      if (!clickedLink && window.getSelection().toString()) return;  // user was selecting text
+      panel.opener = link;
+      panel.pushedHistory = true;
+      if (!clickedLink) window.location.hash = link.getAttribute("href");
+    });
+  }
+
+  for (const button of document.querySelectorAll("#stock-panel [data-days]")) {
+    button.addEventListener("click", () => {
+      panel.range = Number(button.dataset.days);
+      for (const other of document.querySelectorAll("#stock-panel [data-days]")) {
+        other.setAttribute("aria-pressed", String(other === button));
+      }
+      if (panel.prices) drawPriceChart();
+    });
+  }
+}
+
+// ----- messages -----
+
+/** A message in one part of the panel, with an optional Retry button for network errors. */
+function panelMessage(container, text, retry) {
+  const box = el("div", "rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200");
+  box.setAttribute("role", "alert");
+  box.append(el("p", "", text));
+  if (retry) {
+    const button = el("button", "mt-2 rounded-md border border-red-400 px-3 py-1 text-sm font-medium hover:bg-red-100 focus-visible:outline-2 focus-visible:outline-indigo-500 dark:border-red-700 dark:hover:bg-red-900", "Retry");
+    button.type = "button";
+    button.addEventListener("click", () => {
+      container.focus();   // the button is about to disappear; keep focus inside the panel
+      retry();
+    });
+    box.append(button);
+  }
+  container.replaceChildren(box);
+}
+
+/** Readable text for a failed panel request. */
+function panelErrorText(error, notFoundText) {
+  if (error.status === 404) return notFoundText;
+  if (error.status === 503) return `No data yet: ${error.message} (run python main.py)`;
+  if (error.status) return `Could not load this part: ${error.message}`;
+  return "Could not reach the API (or it took too long). Is uvicorn running?";
+}
+
+/** Long or odd hash text is shown shortened, and always via textContent. */
+function displayTicker(ticker) {
+  return ticker.length > 12 ? `${ticker.slice(0, 12)}…` : ticker;
+}
+
+// ----- stats part -----
+
+function statsSkeleton() {
+  const wrap = el("div", "space-y-4");
+  wrap.append(el("span", "block h-8 w-40 animate-pulse rounded bg-slate-200 dark:bg-slate-700"));
+  const tiles = el("div", "grid grid-cols-3 gap-3");
+  for (let i = 0; i < 3; i++) tiles.append(el("span", "block h-16 animate-pulse rounded-lg bg-slate-200 dark:bg-slate-700"));
+  wrap.append(tiles, el("span", "block h-5 w-48 animate-pulse rounded bg-slate-200 dark:bg-slate-700"));
+  return wrap;
+}
+
+async function showStock(ticker) {
+  const stats = document.getElementById("panel-stats");
+  document.getElementById("panel-title").textContent = displayTicker(ticker) || "Unknown";
+  document.getElementById("panel-badge").replaceChildren();
+  document.getElementById("panel-name").textContent = "";
+
+  if (!TICKER_RE.test(ticker)) {
+    document.getElementById("panel-title").textContent = "Unknown ticker";
+    panelMessage(stats, `"${displayTicker(ticker)}" is not a valid ticker symbol.`);
+    return;
+  }
+  stats.setAttribute("aria-busy", "true");
+  stats.replaceChildren(statsSkeleton());
+  try {
+    const data = await cachedFetch(stockCache, ticker, `/api/stock/${encodeURIComponent(ticker)}`);
+    if (ticker !== panel.ticker) return;   // the user moved on to another company
+    renderStats(data);
+  } catch (error) {
+    if (ticker !== panel.ticker) return;
+    const retry = error.status ? null : () => showStock(ticker);
+    panelMessage(stats, panelErrorText(error, `${ticker} isn't in the latest data. Check the symbol; it may have no data today.`), retry);
+  } finally {
+    stats.removeAttribute("aria-busy");
+  }
+}
+
+function statTile(label, value) {
+  const parts = pctParts(value);
+  const tile = el("div", "rounded-lg border border-slate-200 p-3 text-center dark:border-slate-800");
+  tile.append(el("dt", "text-xs text-slate-600 dark:text-slate-400", label));
+  const dd = el("dd", `mt-1 tabular-nums font-semibold whitespace-nowrap ${parts.cls}`);
+  const visible = el("span", "", parts.text);
+  visible.setAttribute("aria-hidden", "true");
+  dd.append(visible, el("span", "sr-only", parts.label));
+  tile.append(dd);
+  return tile;
+}
+
+function renderStats(data) {
+  const stock = data.stock || {};
+  document.getElementById("panel-title").textContent = stock.ticker || panel.ticker;
+  document.getElementById("panel-name").textContent = stock.name || "";
+  if (stock.is_outlier) document.getElementById("panel-badge").replaceChildren(verifyBadge());
+
+  const wrap = el("div", "space-y-4");
+
+  const top = el("div", "flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1");
+  top.append(el("p", "text-3xl font-semibold tabular-nums", money(stock.close)));
+  top.append(el("p", "text-sm text-slate-600 dark:text-slate-400", `Mkt cap ${marketCap(stock.market_cap_billions)}`));
+  wrap.append(top);
+  wrap.append(el("p", "text-sm text-slate-600 dark:text-slate-400", `Close as of ${prettyDate(data.as_of)}`));
+
+  const tiles = el("dl", "grid grid-cols-3 gap-3");
+  tiles.append(statTile("Day", stock.day_pct), statTile("Week", stock.week_pct), statTile("Month", stock.month_pct));
+  wrap.append(tiles);
+
+  const groups = Array.isArray(stock.groups) ? stock.groups : [];
+  const groupsBox = el("div");
+  groupsBox.append(el("h3", "mb-2 text-sm font-semibold", "Groups"));
+  if (groups.length === 0) {
+    groupsBox.append(el("p", "text-sm text-slate-600 dark:text-slate-400", "Not in any group."));
+  } else {
+    const list = el("ul", "flex flex-wrap gap-2");
+    for (const name of groups) list.append(el("li", "chip", String(name).replaceAll("_", " ")));
+    groupsBox.append(list);
+  }
+  wrap.append(groupsBox);
+
+  document.getElementById("panel-stats").replaceChildren(wrap);
+}
+
+// ----- chart part -----
+
+function destroyPriceChart() {
+  if (priceChart) {
+    priceChart.destroy();
+    priceChart = null;
+  }
+}
+
+/** Show a loading shimmer or a message in the chart area (and hide the canvas). */
+function chartPlaceholder(node) {
+  destroyPriceChart();
+  document.getElementById("panel-chart-box").hidden = true;
+  document.getElementById("panel-chart-note").hidden = true;
+  document.getElementById("panel-chart-message").replaceChildren(...(node ? [node] : []));
+}
+
+async function showPrices(ticker) {
+  const message = document.getElementById("panel-chart-message");
+  if (!TICKER_RE.test(ticker)) {
+    chartPlaceholder(null);
+    panelMessage(message, "No chart: the ticker symbol is not valid.");
+    return;
+  }
+  chartPlaceholder(el("span", "block h-64 animate-pulse rounded-lg bg-slate-200 dark:bg-slate-700"));
+  message.setAttribute("aria-busy", "true");
+  try {
+    const data = await cachedFetch(pricesCache, ticker, `/api/stock/${encodeURIComponent(ticker)}/prices?days=${PRICE_DAYS}`);
+    if (ticker !== panel.ticker) return;
+    const prices = Array.isArray(data.prices) ? data.prices : [];
+    // If the stats call failed, the prices answer still carries the company name.
+    const nameEl = document.getElementById("panel-name");
+    if (!nameEl.textContent && data.name) nameEl.textContent = data.name;
+    const withClose = prices.filter((p) => isNumber(p.close)).length;   // counting points, not math
+    if (withClose < 2) {
+      chartPlaceholder(null);
+      panelMessage(message, `Not enough price history to draw a chart (${withClose} day${withClose === 1 ? "" : "s"} saved).`);
+      return;
+    }
+    panel.prices = prices;
+    drawPriceChart();
+  } catch (error) {
+    if (ticker !== panel.ticker) return;
+    chartPlaceholder(null);
+    const retry = error.status ? null : () => showPrices(ticker);
+    panelMessage(message, panelErrorText(error, `No saved price history for ${ticker} yet.`), retry);
+  } finally {
+    message.removeAttribute("aria-busy");
+  }
+}
+
+function drawPriceChart() {
+  const points = panel.prices.slice(-panel.range);   // 1M = the last 21 of the 63 we have
+  const box = document.getElementById("panel-chart-box");
+  const message = document.getElementById("panel-chart-message");
+  const note = document.getElementById("panel-chart-note");
+
+  destroyPriceChart();   // never stack a new chart on top of an old one
+  if (typeof Chart === "undefined") {
+    chartPlaceholder(null);
+    panelMessage(message, "The chart library failed to load. The numbers above are still correct.");
+    return;
+  }
+  message.replaceChildren();
+  box.hidden = false;
+
+  // Fewer saved days than the range asks for: say so instead of pretending.
+  note.hidden = points.length >= panel.range;
+  note.textContent = `Only ${points.length} trading days saved so far.`;
+
+  const canvas = document.getElementById("price-chart");
+  const first = points[0].date;
+  const last = points[points.length - 1].date;
+  canvas.setAttribute("aria-label",
+    `Line chart of ${panel.ticker} daily closing prices over ${points.length} trading days, from ${prettyDate(first)} to ${prettyDate(last)}.`);
+
+  const colors = chartColors();
+  const dark = document.documentElement.classList.contains("dark");
+  const line = dark ? "#818cf8" : "#4f46e5";   // indigo-400 / indigo-600: neutral, not "good" or "bad"
+
+  priceChart = new Chart(canvas, {
+    type: "line",
+    data: {
+      labels: points.map((p) => shortDate(p.date)),
+      datasets: [{
+        label: "Close",
+        data: points.map((p) => (isNumber(p.close) ? p.close : null)),
+        borderColor: line,
+        backgroundColor: line,
+        borderWidth: 2,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        tension: 0,          // straight segments: do not invent a smooth curve between closes
+        spanGaps: false,     // a missing day stays a visible gap
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 250 },
+      interaction: { mode: "index", intersect: false },   // hover anywhere above a date
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => prettyDate(points[items[0].dataIndex].date),
+            label: (ctx) => `Close ${money(ctx.parsed.y)}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { color: colors.grid }, border: { color: colors.grid },
+          ticks: { color: colors.text, maxRotation: 0, autoSkip: true, maxTicksLimit: 6 },
+        },
+        y: {
+          grid: { color: colors.grid }, border: { color: colors.grid },
+          ticks: { color: colors.text, callback: (value) => money(value) },
+        },
+      },
+    },
+  });
+}
+
 // ---------- controls: tabs, direction buttons, theme ----------
 
 function selectPeriod(button, moveFocus) {
@@ -449,6 +881,7 @@ function setupTheme() {
       applyChartTheme(colors);
       moversChart.update();
     }
+    if (priceChart && panel.prices) drawPriceChart();  // redraw the panel chart in the new colours
   });
 }
 
@@ -458,6 +891,8 @@ async function init() {
   setupTheme();
   setupTabs();
   setupDirection();
+  setupPanel();
+  route();  // a reload or shared link with #/stock/TICKER opens the panel straight away
   groupSkeletons();
   skeletonRows(document.getElementById("movers-body"), 6, 8);
   skeletonRows(document.getElementById("companies-body"), 8, 8);
