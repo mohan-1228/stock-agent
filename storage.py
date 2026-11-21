@@ -15,13 +15,19 @@ CREATE TABLE IF NOT EXISTS daily_returns (
     market_cap REAL,
     PRIMARY KEY (trade_date, ticker)
 );
+CREATE TABLE IF NOT EXISTS prices (
+    trade_date TEXT NOT NULL,
+    ticker     TEXT NOT NULL,
+    close      REAL NOT NULL,
+    PRIMARY KEY (trade_date, ticker)
+);
 """
 
 
 def connect(db_path):
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
-    conn.execute(SCHEMA)
+    conn.executescript(SCHEMA)
     return conn
 
 
@@ -73,3 +79,28 @@ def latest_snapshot(conn):
         index_col="ticker",
     )
     return row[0], df.astype("float64")
+
+
+def save_prices(conn, closes: pd.DataFrame):
+    """Store the daily close of every ticker for every day in `closes` (rows = days, columns = tickers).
+
+    Safe to run every day: days already saved are simply overwritten with the same values.
+    """
+    rows = [
+        (str(day.date()), ticker, float(value))
+        for ticker in closes.columns
+        for day, value in closes[ticker].dropna().items()
+    ]
+    conn.executemany("INSERT OR REPLACE INTO prices VALUES (?,?,?)", rows)
+    conn.commit()
+    return len(rows)
+
+
+def price_series(conn, ticker, days=63) -> pd.DataFrame:
+    """The last `days` saved closes for one ticker, oldest first (ready to draw as a line)."""
+    df = pd.read_sql_query(
+        "SELECT trade_date, close FROM prices WHERE ticker = ? ORDER BY trade_date DESC LIMIT ?",
+        conn,
+        params=(ticker.upper(), int(days)),
+    )
+    return df.iloc[::-1].reset_index(drop=True)
