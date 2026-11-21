@@ -11,6 +11,11 @@ REPORTS_DIR = BASE_DIR / "reports"
 TIMEZONE = "America/Chicago"   # report runs at 6 pm here, after the 3 pm CT close
 HISTORY_PERIOD = "3mo"         # enough daily bars for the 21-day monthly window
 
+# One-time (or monthly) history backfill: python backfill.py. The daily run still uses HISTORY_PERIOD.
+BACKFILL_PERIOD = "5y"         # how far back to download closes
+BACKFILL_BATCH_SIZE = 100      # tickers per Yahoo request
+BACKFILL_PAUSE_SECONDS = 2.0   # rest between batches so Yahoo doesn't block us
+
 TOP_N_MOVERS = 20              # gainers / losers shown per period
 TOP_N_COMPANIES = 100           # size of the market-cap leaderboard
 

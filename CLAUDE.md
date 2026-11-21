@@ -43,6 +43,7 @@ The owner (Mohan) is a beginner learning AI agents first and AWS second. **Do no
 python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
 python -m pip install -r requirements.txt             # always `python -m pip`
 python main.py              # daily run (skips non-trading days); --force uses the latest trading day
+python backfill.py --tickers AAPL,NVDA   # one-time ~5y price history into `prices`; no --tickers = all; --period 10y
 python tools.py get_movers period=week direction=losers n=5     # try a tool without AI
 export OLLAMA_MODEL=qwen3:4b && python agent.py "Which 5 stocks fell the most today?"
 python -m uvicorn api:app --reload                    # dashboard at http://127.0.0.1:8000
@@ -54,7 +55,8 @@ pytest                                                # must stay green
 |---|---|
 | config.py | All settings. Change values here, not elsewhere |
 | universe.py, update_universe.py | Ticker lists (tickers.csv, extra_tickers.csv, groups.csv) |
-| data.py | yfinance fetching (closes, parallel market caps) |
+| data.py | yfinance fetching (closes, batched closes with retry, parallel market caps) |
+| backfill.py | One-time (or monthly) download of ~5 years of closes into `prices`; never touches `daily_returns` |
 | analysis.py | Returns, movers, top companies (dedupes share classes), outliers |
 | storage.py | SQLite: `save_snapshot`, `latest_snapshot`, `ticker_history`, `save_prices`, `price_series` |
 | report.py, main.py | Markdown report and the daily pipeline |
@@ -115,6 +117,7 @@ Rules: validate inputs (unknown ticker or period gives a clear 4xx), reuse `Tool
 3. Dashboard v1: tabs, bar charts, tables, outlier badges, light/dark. *done*
 4. Company side panel with price line chart; groups and top-companies sections. *done*
    - 4b. Range change (`change_pct`) returned by `/api/stock/{ticker}/prices`, so the panel can show e.g. "+4.2% over 3M" without doing math in JavaScript. Separate PR after milestone 4. *done*
+   - 4c. One-time history backfill (`backfill.py`): ~5 years of daily closes into `prices`, batches of 100 with a pause and one retry, safe to re-run. No page changes; longer chart ranges are a later PR. Follow-up: index on `prices(ticker, trade_date)` after measuring. *done*
 5. `/api/ask` plus the Ask-the-AI box (local model), with loading and error states.
 6. News module, `news` table, news endpoints/tools, news panel and policy/macro section.
 7. Quality pass: GitHub Actions running pytest, number checker for AI answers, 20 to 30 evaluation questions, README with screenshots.
@@ -127,7 +130,7 @@ Each milestone is done only when: tests pass, the feature works in the browser (
 
 ## Known issues
 - KVUE returns no data (likely delisted/merged); review the ticker list occasionally.
-- Saved prices are split- and dividend-adjusted as of the day they were last downloaded. Each daily run only re-downloads the last ~3 months, so older rows can keep an outdated adjustment after a split or dividend. This matters if we chart ranges longer than about 3 months.
+- Saved prices are split- and dividend-adjusted as of the day they were last downloaded. Each daily run only re-downloads the last ~3 months, so older rows can keep an outdated adjustment after a split or dividend. This matters if we chart ranges longer than about 3 months. Fix: re-run `python backfill.py` (for example monthly); INSERT OR REPLACE refreshes all old rows with the current adjustment.
 - KVUE has only 1 saved price (likely delisted): check its last date and remove it from the ticker list.
 - Range change (1M/3M in the panel) counts saved closes, not market days. If Yahoo skipped a day for a stock, its 1M window spans 22 saved closes that cover slightly more than 21 market days, while `month_pct` is null for that stock. Rare; a market calendar would fix it.
 - Yahoo data can contain bad prints; moves of 20% or more in a day are flagged for verification.
