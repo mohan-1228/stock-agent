@@ -80,6 +80,16 @@ pytest                                                # must stay green
 - Push the branch, open a pull request with What / Why / How it works / Tested, squash-merge, then `git switch main && git pull` and delete the branch.
 - Do not rewrite pushed history without telling me.
 
+## Shipping workflow (Claude does the Git work)
+After I say a milestone is checked in the browser, do all of this without asking again:
+1. Mark the milestone done in CLAUDE.md and commit.
+2. Run the full pytest suite. If anything fails, stop and tell me.
+3. Run git status and stage files by name only. Never stage data/, reports/, .env, .venv/ or any .db file. If something unexpected is staged, stop and tell me.
+4. Push the branch, open a pull request with gh (What / Why / How it works / Tested / Not verified, with real numbers and honest limits).
+5. Squash-merge the pull request only if pytest passed and the PR has the full description. Then switch to main, pull, delete the local and remote branch, fetch --prune, and run pytest on main. Report the result.
+Never: force-push, reset --hard, git clean, rewrite pushed history, merge a PR with failing tests, or touch any other branch than the one for this milestone.
+Plans still need my approval before any code is written, and I do the by-eye browser checks myself.
+
 ## Dashboard specification
 ### API (`api.py`, all JSON, read-only except `/api/ask`)
 - `GET /api/health`
