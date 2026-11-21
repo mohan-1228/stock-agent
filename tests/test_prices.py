@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from storage import connect, price_series, save_prices
 
@@ -28,3 +29,16 @@ def test_saving_prices_twice_does_not_duplicate(tmp_path):
     save_prices(conn, make_closes())
     assert len(price_series(conn, "AAA", 30)) == 3
     assert price_series(conn, "ZZZ", 30).empty
+
+def test_toolbox_price_series_shape_and_unknown_ticker(tmp_path):
+    from tools import Toolbox
+
+    conn = connect(tmp_path / "t.db")
+    save_prices(conn, make_closes())
+    toolbox = Toolbox(conn, {"AAA": "Alpha Inc"})
+    result = toolbox.get_price_series(" aaa ", 2)
+    assert result["ticker"] == "AAA"
+    assert result["name"] == "Alpha Inc"
+    assert result["prices"] == [{"date": "2026-11-18", "close": 11.0}, {"date": "2026-11-19", "close": 12.0}]
+    with pytest.raises(ValueError, match="ZZZ"):
+        toolbox.get_price_series("ZZZ")
