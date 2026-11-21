@@ -188,9 +188,13 @@
         <section aria-labelledby="panel-chart-title" class="space-y-3">
           <div class="flex items-center justify-between gap-3">
             <h3 id="panel-chart-title" class="font-semibold">Price</h3>
-            <div role="group" aria-label="Chart range" class="inline-flex rounded-lg bg-slate-200 p-1 dark:bg-slate-800">
-              <button type="button" data-days="21" aria-pressed="false" class="tab" aria-label="1 month (about 21 trading days)">1M</button>
-              <button type="button" data-days="63" aria-pressed="true" class="tab" aria-label="3 months (about 63 trading days)">3M</button>
+            <div class="flex items-center gap-3">
+              <!-- Filled by app.js from the API's change_pct (computed in Python). Empty when null. -->
+              <p id="panel-range-change" class="text-sm tabular-nums font-semibold whitespace-nowrap" aria-live="polite"></p>
+              <div role="group" aria-label="Chart range" class="inline-flex rounded-lg bg-slate-200 p-1 dark:bg-slate-800">
+                <button type="button" data-range="1M" aria-pressed="false" class="tab" aria-label="1 month (21 trading days)">1M</button>
+                <button type="button" data-range="3M" aria-pressed="true" class="tab" aria-label="3 months (63 trading days)">3M</button>
+              </div>
             </div>
           </div>
           <div id="panel-chart-box" class="relative h-64" hidden>

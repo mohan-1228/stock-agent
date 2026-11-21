@@ -19,6 +19,47 @@ from universe import load_universe, load_groups
 
 PERIOD_COLUMN = {"day": "day_pct", "week": "week_pct", "month": "month_pct"}
 
+# Chart ranges in trading-day moves. A range of n moves needs n + 1 closes, so
+# 1M (21 moves, 22 closes) is the same window as month_pct in analysis.PERIODS.
+RANGES = {"1M": 21, "3M": 63}
+
+
+def range_change(closes) -> float | None:
+    """Percent change from the first to the last close, or None when it can't be trusted.
+
+    None (never a guess) when there are fewer than 2 closes, the first close is
+    missing, zero or negative (we would divide by it), or the last close is missing.
+    Full precision: round only at the edge with _num.
+    """
+    values = list(closes)
+    if len(values) < 2:
+        return None
+    first, last = values[0], values[-1]
+    if pd.isna(first) or pd.isna(last) or first <= 0:
+        return None
+    return (float(last) / float(first) - 1.0) * 100.0
+
+
+def _ranges(series: pd.DataFrame) -> dict:
+    """change_pct for each chart range, from a price series sorted oldest first.
+
+    A range with fewer saved closes than it needs gets change_pct None, so the
+    page shows nothing rather than a shorter window under a longer label.
+    """
+    out = {}
+    for label, moves in RANGES.items():
+        needed = moves + 1
+        window = series.tail(needed)
+        enough = len(window) == needed
+        out[label] = {
+            "trading_days": moves,
+            "closes": needed,
+            "start_date": window["trade_date"].iloc[0] if enough else None,
+            "end_date": window["trade_date"].iloc[-1] if enough else None,
+            "change_pct": _num(range_change(window["close"])) if enough else None,
+        }
+    return out
+
 
 def _num(x, digits=2):
     """Round a number for the model; missing values become None (JSON null)."""
@@ -111,16 +152,20 @@ class Toolbox:
         """
         days = max(1, min(int(days), 252))
         symbol = ticker.strip().upper()
-        series = price_series(self.conn, symbol, days)
+        # Read enough rows for the longest range too, so `ranges` doesn't depend on `days`.
+        longest = max(RANGES.values()) + 1
+        series = price_series(self.conn, symbol, max(days, longest))
         if series.empty:
             raise ValueError(f"No saved prices for {symbol}.")
+        shown = series.tail(days)
         return {
             "as_of": self.as_of,
             "ticker": symbol,
             "name": self.names.get(symbol, ""),
             "prices": [
-                {"date": r["trade_date"], "close": _num(r["close"])} for _, r in series.iterrows()
+                {"date": r["trade_date"], "close": _num(r["close"])} for _, r in shown.iterrows()
             ],
+            "ranges": _ranges(series),
         }
 
     def get_stock(self, ticker):
