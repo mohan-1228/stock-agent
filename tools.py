@@ -21,7 +21,27 @@ PERIOD_COLUMN = {"day": "day_pct", "week": "week_pct", "month": "month_pct"}
 
 # Chart ranges in trading-day moves. A range of n moves needs n + 1 closes, so
 # 1M (21 moves, 22 closes) is the same window as month_pct in analysis.PERIODS.
-RANGES = {"1M": 21, "3M": 63}
+# All are multiples of 21 ("1 month = 21 trading days"); 1Y = 252, the usual
+# number of US trading days in a year, and 5Y = 5 x 252.
+RANGES = {"1M": 21, "3M": 63, "6M": 126, "1Y": 252, "5Y": 1260}
+MAX_PRICE_DAYS = max(RANGES.values()) + 1   # 1261 closes: enough to draw 5Y
+MAX_STEP = 5                                # thinnest the chart gets: one close per 5 trading days
+
+
+def thin_series(series: pd.DataFrame, step: int) -> pd.DataFrame:
+    """Keep every `step`-th close, counting back from the latest, plus the very first one.
+
+    Why: a 5-year daily line is ~1,260 points, slow and cluttered on a phone; one
+    point per 5 trading days (about weekly) draws the same shape. Counting back from
+    the latest close means the line always ends on today's real close, and keeping
+    the first close means it starts where the range change starts. Only for drawing:
+    range changes are always computed from the full daily series.
+    """
+    n = len(series)
+    if step <= 1 or n == 0:
+        return series
+    keep = sorted({0} | set(range(n - 1, -1, -step)))
+    return series.iloc[keep]
 
 
 def range_change(closes) -> float | None:
@@ -144,20 +164,22 @@ class Toolbox:
             "rows": rows,
         }
 
-    def get_price_series(self, ticker, days=63):
+    def get_price_series(self, ticker, days=63, step=1):
         """Daily closes for one ticker, oldest first, for drawing a price line chart.
 
         Reads the `prices` table (full daily history), not `daily_returns`
         (which only has days the report ran). Not an agent tool yet: the dashboard uses it.
+        `step` > 1 thins the drawn points (see thin_series); `ranges` never changes with it.
         """
-        days = max(1, min(int(days), 252))
+        days = max(1, min(int(days), MAX_PRICE_DAYS))
+        step = max(1, min(int(step), MAX_STEP))
         symbol = ticker.strip().upper()
         # Read enough rows for the longest range too, so `ranges` doesn't depend on `days`.
-        longest = max(RANGES.values()) + 1
-        series = price_series(self.conn, symbol, max(days, longest))
+        series = price_series(self.conn, symbol, MAX_PRICE_DAYS)
         if series.empty:
             raise ValueError(f"No saved prices for {symbol}.")
-        shown = series.tail(days)
+        window = series.tail(days)
+        shown = thin_series(window, step)
         return {
             "as_of": self.as_of,
             "ticker": symbol,
@@ -165,6 +187,10 @@ class Toolbox:
             "prices": [
                 {"date": r["trade_date"], "close": _num(r["close"])} for _, r in shown.iterrows()
             ],
+            "step": step,
+            # How many daily closes `prices` spans (before thinning), so the page can say
+            # "only N trading days saved" without counting anything itself.
+            "days_covered": len(window),
             "ranges": _ranges(series),
         }
 

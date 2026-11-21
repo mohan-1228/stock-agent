@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 import config
 from storage import connect
-from tools import Toolbox
+from tools import MAX_PRICE_DAYS, MAX_STEP, Toolbox
 from universe import load_groups, load_universe
 
 # uvicorn already prints this logger to the console, so our error logs show up next to its own.
@@ -123,10 +123,11 @@ def stock(ticker: str = Path(pattern=TICKER_PATTERN), tb: Toolbox = Depends(get_
 @app.get("/api/stock/{ticker}/prices")
 def stock_prices(
     ticker: str = Path(pattern=TICKER_PATTERN),
-    days: int = Query(63, ge=1, le=252),
+    days: int = Query(63, ge=1, le=MAX_PRICE_DAYS),
+    step: int = Query(1, ge=1, le=MAX_STEP),
     tb: Toolbox = Depends(get_toolbox),
 ):
-    return _run(tb.get_price_series, ticker, days)
+    return _run(tb.get_price_series, ticker, days, step)
 
 
 @app.get("/api/groups")
