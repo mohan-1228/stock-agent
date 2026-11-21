@@ -2,7 +2,9 @@
 import pandas as pd
 import pytest
 
+from backfill import parse_tickers, print_summary, run_backfill, unknown_tickers
 from data import fetch_closes_in_batches, split_into_batches
+from storage import connect
 
 DAYS = pd.to_datetime(["2026-11-17", "2026-11-18", "2026-11-19"])
 
@@ -86,3 +88,84 @@ def test_empty_result_for_whole_batch_counts_as_failure():
     [result] = list(fetch_closes_in_batches(tickers(2), "5y", fetch=fetch, sleep=sleep))
     assert result.closes is None
     assert result.error == "no data returned for the whole batch"
+
+
+# --- backfill.py: saving, reporting, re-running ------------------------------
+
+def count_prices(conn):
+    return conn.execute("SELECT COUNT(*) FROM prices").fetchone()[0]
+
+
+def quiet(*_):
+    """A log function that prints nothing, so test output stays clean."""
+
+
+def test_backfill_saves_all_batches_and_summary_counts(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    summary = run_backfill(conn, tickers(5), "5y", batch_size=2, pause_seconds=2.0,
+                           fetch=FakeFetch(), sleep=FakeSleep(), log=quiet)
+    assert summary.rows_saved == 15 == count_prices(conn)   # 5 tickers x 3 days
+    assert len(summary.first_dates) == 5
+    assert summary.last_date.isoformat() == "2026-11-19"
+    assert summary.no_data == [] and summary.failed == []
+
+
+def test_failing_batch_is_reported_and_other_batches_are_saved(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    lines = []
+    summary = run_backfill(conn, tickers(4), "5y", batch_size=2, pause_seconds=0,
+                           fetch=FakeFetch(fail_calls={1, 2}), sleep=FakeSleep(), log=lines.append)
+    assert summary.failed == ["T000", "T001"]
+    assert count_prices(conn) == 6                           # batch 2 still saved (2 x 3 days)
+    assert any("FAILED" in line for line in lines)
+
+    out = []
+    print_summary(summary, 4, "5y", log=out.append)
+    assert "  python backfill.py --period 5y --tickers T000,T001" in out
+
+
+def test_saving_twice_does_not_duplicate_rows(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    for _ in range(2):
+        run_backfill(conn, tickers(3), "5y", batch_size=100, pause_seconds=0,
+                     fetch=FakeFetch(), sleep=FakeSleep(), log=quiet)
+    assert count_prices(conn) == 9
+
+
+def test_failed_batch_never_deletes_existing_rows(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    run_backfill(conn, tickers(2), "5y", 100, 0, fetch=FakeFetch(), sleep=FakeSleep(), log=quiet)
+    run_backfill(conn, tickers(2), "5y", 100, 0, fetch=FakeFetch(fail_calls={1, 2}),
+                 sleep=FakeSleep(), log=quiet)
+    assert count_prices(conn) == 6
+
+
+def test_ticker_without_data_is_reported_and_short_history_is_not(tmp_path):
+    def fetch(batch, period):
+        days = pd.bdate_range("2021-11-19", "2026-11-19")
+        df = pd.DataFrame({"OLD": 1.0, "NEW": 2.0, "GONE": float("nan")}, index=days)
+        df.loc[df.index < "2025-06-02", "NEW"] = float("nan")   # listed mid-2025
+        return df[[t for t in batch if t != "MISSING"]]         # MISSING: column left out
+
+    conn = connect(tmp_path / "t.db")
+    summary = run_backfill(conn, ["OLD", "NEW", "GONE", "MISSING"], "5y", 100, 0,
+                           fetch=fetch, sleep=FakeSleep(), log=quiet)
+    assert summary.no_data == ["GONE", "MISSING"]
+    assert summary.failed == []
+    assert summary.short_history() == ["NEW"]
+
+    out = []
+    print_summary(summary, 4, "5y", log=out.append)
+    assert "Tickers with data: 2 of 4" in out
+    assert any(line.startswith("Info: 1 tickers have less than the full 5y") for line in out)
+
+
+def test_backfill_never_touches_daily_returns(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    run_backfill(conn, tickers(3), "5y", 100, 0, fetch=FakeFetch(), sleep=FakeSleep(), log=quiet)
+    assert conn.execute("SELECT COUNT(*) FROM daily_returns").fetchone()[0] == 0
+
+
+def test_parse_and_unknown_tickers():
+    assert parse_tickers(" aapl, NVDA,,aapl ") == ["AAPL", "NVDA"]
+    assert unknown_tickers(["AAPL", "ZZZZ"], ["AAPL", "NVDA"]) == ["ZZZZ"]
