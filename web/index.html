@@ -1,3 +1,183 @@
 <!doctype html>
-<title>Stock Agent</title>
-<p>Dashboard coming soon.</p>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stock Agent dashboard</title>
+
+  <!-- Pick the theme BEFORE anything is drawn, so a dark-mode user never sees a white flash.
+       Saved choice wins; otherwise follow the operating system setting. -->
+  <script>
+    (function () {
+      var saved = null;
+      try { saved = localStorage.getItem("theme"); } catch (e) { /* storage blocked: ignore */ }
+      var dark = saved ? saved === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.classList.toggle("dark", dark);
+    })();
+  </script>
+
+  <!-- Pinned versions + SRI fingerprints: the browser refuses the file if a single byte differs. -->
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.5/dist/index.global.js"
+          integrity="sha384-t+qLIxS5zM/KF99/doWY+dxTsavdvgayaZt8A9ntLsUjEkiXzYl5M3Ij8zVFPL9j"
+          crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.6.1/dist/chart.umd.min.js"
+          integrity="sha384-Emf5ZVIUiarAdhkgtqK+5/Z5qIvM6QoVrS+qAVtfyZVuD5lIHrac0me485+Antp0"
+          crossorigin="anonymous"></script>
+
+  <style type="text/tailwindcss">
+    /* Tailwind v4: let the "dark:" classes follow a .dark class on <html> (our toggle). */
+    @custom-variant dark (&:where(.dark, .dark *));
+  </style>
+</head>
+
+<body class="min-h-screen bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100">
+  <a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:rounded focus:bg-indigo-600 focus:px-3 focus:py-2 focus:text-white">Skip to content</a>
+
+  <header class="border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+    <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
+      <div>
+        <h1 class="text-xl font-semibold tracking-tight">Stock Agent</h1>
+        <p class="text-sm text-slate-600 dark:text-slate-400">
+          <span id="as-of">Loading…</span>
+        </p>
+      </div>
+      <button id="theme-toggle" type="button" aria-pressed="false"
+              class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:border-slate-700 dark:hover:bg-slate-800">
+        <span aria-hidden="true" id="theme-icon">☾</span>
+        <span id="theme-label">Dark mode</span>
+      </button>
+    </div>
+  </header>
+
+  <main id="main" class="mx-auto max-w-6xl space-y-10 px-4 py-8 sm:px-6">
+
+    <!-- Shown only when the API cannot be reached at all. -->
+    <div id="global-error" role="alert" hidden
+         class="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200"></div>
+
+    <!-- Summary cards -->
+    <section aria-labelledby="summary-title">
+      <h2 id="summary-title" class="sr-only">Summary</h2>
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div class="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+          <p class="text-sm text-slate-600 dark:text-slate-400">Stocks tracked</p>
+          <p id="card-stocks" class="mt-1 text-2xl font-semibold"><span class="skeleton"></span></p>
+        </div>
+        <div class="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+          <p class="text-sm text-slate-600 dark:text-slate-400">Outliers today <span class="text-xs">(day move of 20% or more)</span></p>
+          <p id="card-outliers" class="mt-1 text-2xl font-semibold"><span class="skeleton"></span></p>
+        </div>
+        <div class="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+          <p class="text-sm text-slate-600 dark:text-slate-400">Data date</p>
+          <p id="card-date" class="mt-1 text-2xl font-semibold"><span class="skeleton"></span></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Top movers -->
+    <section aria-labelledby="movers-title" class="space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <h2 id="movers-title" class="text-lg font-semibold">Top movers</h2>
+        <div class="flex flex-wrap items-center gap-3">
+          <div role="tablist" aria-label="Period" id="period-tabs"
+               class="inline-flex rounded-lg bg-slate-200 p-1 dark:bg-slate-800">
+            <button role="tab" id="tab-day" data-period="day" aria-selected="true" aria-controls="movers-panel" tabindex="0" class="tab">Day</button>
+            <button role="tab" id="tab-week" data-period="week" aria-selected="false" aria-controls="movers-panel" tabindex="-1" class="tab">Week</button>
+            <button role="tab" id="tab-month" data-period="month" aria-selected="false" aria-controls="movers-panel" tabindex="-1" class="tab">Month</button>
+          </div>
+          <div role="group" aria-label="Direction" class="inline-flex rounded-lg bg-slate-200 p-1 dark:bg-slate-800">
+            <button type="button" data-direction="gainers" aria-pressed="true" class="tab">▲ Gainers</button>
+            <button type="button" data-direction="losers" aria-pressed="false" class="tab">▼ Losers</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="movers-panel" role="tabpanel" aria-labelledby="tab-day"
+           class="grid grid-cols-1 gap-6 lg:grid-cols-5">
+        <div class="rounded-xl border border-slate-200 bg-white p-4 lg:col-span-2 dark:border-slate-800 dark:bg-slate-900">
+          <div class="relative h-[30rem]">
+            <canvas id="movers-chart" role="img" aria-label="Bar chart of top movers. The same numbers are in the table."></canvas>
+          </div>
+        </div>
+        <div class="overflow-x-auto rounded-xl border border-slate-200 bg-white lg:col-span-3 dark:border-slate-800 dark:bg-slate-900">
+          <table class="w-full text-sm">
+            <caption id="movers-caption" class="sr-only">Top movers</caption>
+            <thead class="text-left text-xs uppercase tracking-wide text-slate-600 dark:text-slate-400">
+              <tr class="border-b border-slate-200 dark:border-slate-800">
+                <th scope="col" class="px-3 py-3 text-right">#</th>
+                <th scope="col" class="px-3 py-3">Ticker</th>
+                <th scope="col" class="px-3 py-3">Name</th>
+                <th scope="col" class="px-3 py-3 text-right">Close</th>
+                <th scope="col" class="px-3 py-3 text-right">% change</th>
+                <th scope="col" class="px-3 py-3 text-right">Mkt cap</th>
+              </tr>
+            </thead>
+            <tbody id="movers-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Top companies -->
+    <section aria-labelledby="companies-title" class="space-y-4">
+      <h2 id="companies-title" class="text-lg font-semibold">Top companies by market cap</h2>
+      <div class="overflow-x-auto rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+        <table class="w-full text-sm">
+          <caption class="sr-only">Top 20 companies by market cap, with day, week and month percent change</caption>
+          <thead class="text-left text-xs uppercase tracking-wide text-slate-600 dark:text-slate-400">
+            <tr class="border-b border-slate-200 dark:border-slate-800">
+              <th scope="col" class="px-3 py-3 text-right">#</th>
+              <th scope="col" class="px-3 py-3">Ticker</th>
+              <th scope="col" class="px-3 py-3">Name</th>
+              <th scope="col" class="px-3 py-3 text-right">Close</th>
+              <th scope="col" class="px-3 py-3 text-right">Mkt cap</th>
+              <th scope="col" class="px-3 py-3 text-right">Day</th>
+              <th scope="col" class="px-3 py-3 text-right">Week</th>
+              <th scope="col" class="px-3 py-3 text-right">Month</th>
+            </tr>
+          </thead>
+          <tbody id="companies-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Groups -->
+    <section aria-labelledby="groups-title" class="space-y-4">
+      <div>
+        <h2 id="groups-title" class="text-lg font-semibold">Groups <span id="groups-period" class="font-normal text-slate-600 dark:text-slate-400">· day</span></h2>
+        <p id="groups-note" class="text-sm text-slate-600 dark:text-slate-400"></p>
+      </div>
+      <div id="groups-grid" class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"></div>
+    </section>
+  </main>
+
+  <footer class="border-t border-slate-200 dark:border-slate-800">
+    <div class="mx-auto max-w-6xl px-4 py-6 text-sm text-slate-600 sm:px-6 dark:text-slate-400">
+      <p class="font-medium">Information only, not investment advice.</p>
+      <p class="mt-1">Prices from Yahoo Finance (via yfinance) can contain errors. Rows marked "verify" need a second source.</p>
+    </div>
+  </footer>
+
+  <style type="text/tailwindcss">
+    /* Shared look for the Day/Week/Month tabs and Gainers/Losers buttons. */
+    .tab {
+      @apply rounded-md px-3 py-1.5 text-sm font-medium text-slate-700 hover:text-slate-900
+             focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500
+             dark:text-slate-300 dark:hover:text-white;
+    }
+    .tab[aria-selected="true"], .tab[aria-pressed="true"] {
+      @apply bg-indigo-600 text-white shadow-sm hover:text-white;
+    }
+    /* Grey shimmer bar shown while data loads. */
+    .skeleton {
+      @apply inline-block h-6 w-20 animate-pulse rounded bg-slate-200 align-middle dark:bg-slate-700;
+    }
+    /* Gains/losses: arrow + sign carry the meaning; colour is an extra hint. */
+    .up   { @apply text-green-700 dark:text-green-400; }
+    .down { @apply text-red-700 dark:text-red-400; }
+    .flat { @apply text-slate-600 dark:text-slate-400; }
+  </style>
+
+  <script src="/app.js"></script>
+</body>
+</html>
