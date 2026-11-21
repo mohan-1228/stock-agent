@@ -113,7 +113,7 @@ Rules: validate inputs (unknown ticker or period gives a clear 4xx), reuse `Tool
 1. Save daily price history (`prices` table, `save_prices`, `price_series`, called from `main.py`). *done*
 2. `api.py` with the read-only endpoints above, tested with FastAPI TestClient. *done*
 3. Dashboard v1: tabs, bar charts, tables, outlier badges, light/dark. *done*
-4. Company side panel with price line chart; groups and top-companies sections.
+4. Company side panel with price line chart; groups and top-companies sections. *done*
    - 4b. Range change (`change_pct`) returned by `/api/stock/{ticker}/prices`, so the panel can show e.g. "+4.2% over 3M" without doing math in JavaScript. Separate PR after milestone 4.
 5. `/api/ask` plus the Ask-the-AI box (local model), with loading and error states.
 6. News module, `news` table, news endpoints/tools, news panel and policy/macro section.
