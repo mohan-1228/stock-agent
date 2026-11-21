@@ -130,6 +130,13 @@ def test_prices_oldest_first_and_limited(client):
     ]
 
 
+def test_prices_include_ranges_null_when_history_is_short(client):
+    ranges = client.get("/api/stock/AAA/prices").json()["ranges"]
+    assert set(ranges) == {"1M", "3M"}
+    assert ranges["1M"]["change_pct"] is None  # only 3 closes saved in this fixture
+    assert ranges["3M"]["closes"] == 64
+
+
 def test_prices_unknown_ticker_404_and_bad_days_422(client):
     assert client.get("/api/stock/BBB/prices").status_code == 404  # no prices saved for BBB
     assert client.get("/api/stock/AAA/prices?days=0").status_code == 422
