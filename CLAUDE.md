@@ -127,6 +127,8 @@ Each milestone is done only when: tests pass, the feature works in the browser (
 
 ## Known issues
 - KVUE returns no data (likely delisted/merged); review the ticker list occasionally.
+- Saved prices are split- and dividend-adjusted as of the day they were last downloaded. Each daily run only re-downloads the last ~3 months, so older rows can keep an outdated adjustment after a split or dividend. This matters if we chart ranges longer than about 3 months.
+- KVUE has only 1 saved price (likely delisted): check its last date and remove it from the ticker list.
 - Yahoo data can contain bad prints; moves of 20% or more in a day are flagged for verification.
 - An 8 GB machine runs only small models; long tool results make answers slow. Keep tool outputs short.
 - Local model answers can be imprecise (for example saying "return" without "average"); the system prompt asks it to say average or median.
