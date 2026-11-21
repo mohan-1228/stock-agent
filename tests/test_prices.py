@@ -165,4 +165,7 @@ def test_price_series_query_uses_the_index(tmp_path):
     save_prices(conn, make_closes())
     plan = conn.execute("EXPLAIN QUERY PLAN " + PRICE_SERIES_SQL, ("AAA", 63)).fetchall()
     details = " ".join(row[3] for row in plan)
-    assert "USING INDEX idx_prices_ticker_date" in details
+    # Check only the index name: the surrounding wording of the plan differs between
+    # SQLite versions (e.g. "USING INDEX" vs "USING COVERING INDEX"), and CI's Linux
+    # Python may bundle a different SQLite than the Mac.
+    assert "idx_prices_ticker_date" in details

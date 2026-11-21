@@ -1,0 +1,43 @@
+# Runs the test suite on a fresh Linux machine so every PR gets a green or red check.
+# No secrets, no deploys: it only reads the code, installs packages, and runs pytest.
+name: tests
+
+on:
+  push:
+    branches: [main]        # re-check main after every merge
+  pull_request:
+    branches: [main]        # check every PR into main
+  workflow_dispatch:        # "Run workflow" button in the Actions tab
+
+# Least privilege: the job may read the repository and nothing else.
+permissions:
+  contents: read
+
+# If a newer push arrives for the same branch/PR, cancel the older, now-pointless run.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:                   # this job name is the check name used in branch protection; keep it stable
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Actions are pinned to full commit SHAs (tags can be moved); the comment shows the version.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false   # don't leave the git token on the machine after checkout
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+          cache: pip                   # reuse downloaded packages between runs
+          cache-dependency-path: |
+            requirements.txt
+            constraints.txt
+
+      - name: Install dependencies (exact versions from constraints.txt)
+        run: python -m pip install -r requirements.txt -c constraints.txt
+
+      - name: Run tests
+        run: pytest

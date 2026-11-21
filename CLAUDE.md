@@ -36,19 +36,28 @@ The owner (Mohan) is a beginner learning AI agents first and AWS second. **Do no
 | AI model | Ollama, `qwen3:4b` on an 8 GB Apple M2 | select with `OLLAMA_MODEL` env var; `LocalClient` in `agent.py` |
 | News | yfinance per-ticker news + RSS feeds (official/public feeds first) | check each source's terms; no scraping |
 | Tests | pytest, FastAPI TestClient (needs httpx) | no network, no real model in tests |
+| CI | GitHub Actions (`.github/workflows/tests.yml`) | job `pytest` on push to main, PRs to main, manual button; `contents: read`; actions pinned to commit SHAs; installs with `constraints.txt` |
 | Version control | Git + GitHub, PR workflow | repo: https://github.com/mohan-1228/stock-agent |
 
 ## Commands
 ```bash
 python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
-python -m pip install -r requirements.txt             # always `python -m pip`
+python -m pip install -r requirements.txt -c constraints.txt   # always `python -m pip`; -c = exact pinned versions
 python main.py              # daily run (skips non-trading days); --force uses the latest trading day
 python backfill.py --tickers AAPL,NVDA   # one-time ~5y price history into `prices`; no --tickers = all; --period 10y
 python tools.py get_movers period=week direction=losers n=5     # try a tool without AI
 export OLLAMA_MODEL=qwen3:4b && python agent.py "Which 5 stocks fell the most today?"
 python -m uvicorn api:app --reload                    # dashboard at http://127.0.0.1:8000
-pytest                                                # must stay green
+pytest                                                # must stay green (CI runs it on every PR too)
 ```
+
+### Refresh pinned versions (about monthly, or when yfinance breaks), in its own `chore:` PR
+```bash
+python -m pip install --upgrade -r requirements.txt   # newest versions, ignoring constraints.txt
+pytest                                                # must pass locally first
+python -m pip freeze  # replace the version lines in constraints.txt with this output (keep the header comment)
+```
+CI then confirms the new versions on Linux before merge.
 
 ## Layout
 | Path | Job |
@@ -66,6 +75,8 @@ pytest                                                # must stay green
 | news.py | News fetching/storage (to build) |
 | web/ | `index.html`, `app.js`, optional `style.css` (to build) |
 | tests/ | pytest; fake model (`FakeClient`, `FakeSession`) and synthetic DataFrames |
+| constraints.txt | Exact versions of all packages (from `pip freeze`); refresh on purpose |
+| .github/workflows/tests.yml | CI: runs pytest on GitHub's Linux machines |
 
 ## Conventions
 - Small plain functions, readable by a beginner, docstrings that say why.
@@ -88,8 +99,9 @@ After I say a milestone is checked in the browser, do all of this without asking
 2. Run the full pytest suite. If anything fails, stop and tell me.
 3. Run git status and stage files by name only. Never stage data/, reports/, .env, .venv/ or any .db file. If something unexpected is staged, stop and tell me.
 4. Push the branch, open a pull request with gh (What / Why / How it works / Tested / Not verified, with real numbers and honest limits).
-5. Squash-merge the pull request only if pytest passed and the PR has the full description. Then switch to main, pull, delete the local and remote branch, fetch --prune, and run pytest on main. Report the result.
-Never: force-push, reset --hard, git clean, rewrite pushed history, merge a PR with failing tests, or touch any other branch than the one for this milestone.
+5. Wait for CI: `gh pr checks <PR> --watch --fail-fast --interval 15`, with a 10-minute limit. If GitHub reports no checks yet, retry for up to about a minute. If the `pytest` check fails, stop, show me `gh run view <run-id> --log-failed`, and do not merge. If it times out, stop and tell me.
+6. Squash-merge the pull request only if local pytest passed, the `pytest` CI check passed, and the PR has the full description. Then switch to main, pull, delete the local and remote branch, fetch --prune, and run pytest on main. Report the result.
+Never: merge while the CI check is pending or failing, force-push, reset --hard, git clean, rewrite pushed history, merge a PR with failing tests, or touch any other branch than the one for this milestone.
 Plans still need my approval before any code is written, and I do the by-eye browser checks myself.
 
 ## Dashboard specification
@@ -129,9 +141,11 @@ Rules: validate inputs (unknown ticker or period gives a clear 4xx), reuse `Tool
    - 4b. Range change (`change_pct`) returned by `/api/stock/{ticker}/prices`, so the panel can show e.g. "+4.2% over 3M" without doing math in JavaScript. Separate PR after milestone 4. *done*
    - 4c. One-time history backfill (`backfill.py`): ~5 years of daily closes into `prices`, batches of 100 with a pause and one retry, safe to re-run. No page changes; longer chart ranges are a later PR. Follow-up: index on `prices(ticker, trade_date)` after measuring. *done*
    - 4d. Index `idx_prices_ticker_date` on `prices(ticker, trade_date)`, created by `CREATE INDEX IF NOT EXISTS` in `storage.SCHEMA` (existing databases get it on first open, ~0.3 s once). One-ticker lookups went from ~25 ms to under 1 ms; the database grew from 36.9 MB to 51.8 MB. *done*
+   - 4e. CI: GitHub Actions runs pytest (job `pytest`) on every PR to main and every push to main, with pinned versions from `constraints.txt`. *done*
+   - 4f. Longer chart ranges (6M / 1Y / 5Y) in the company panel.
 5. `/api/ask` plus the Ask-the-AI box (local model), with loading and error states.
 6. News module, `news` table, news endpoints/tools, news panel and policy/macro section.
-7. Quality pass: GitHub Actions running pytest, number checker for AI answers, 20 to 30 evaluation questions, README with screenshots.
+7. Quality pass: number checker for AI answers, 20 to 30 evaluation questions, README with screenshots.
 Each milestone is done only when: tests pass, the feature works in the browser (check it, do not assume), and the PR description is written.
 
 ## Out of scope for now (do not do unless I ask)
@@ -148,6 +162,8 @@ Each milestone is done only when: tests pass, the feature works in the browser (
 - An 8 GB machine runs only small models; long tool results make answers slow. Keep tool outputs short.
 - Local model answers can be imprecise (for example saying "return" without "average"); the system prompt asks it to say average or median.
 - Internet-less environments cannot reach Yahoo, so tests use fakes.
+- CI runs on Linux in UTC; the Mac is case-insensitive and on America/Chicago time. Watch for: wrong-case file names or imports, tests that need gitignored files (`data/`, `.env`), `date.today()` near midnight, different SQLite versions (assert on names, not exact query-plan wording). CI machines have internet, so CI does not catch an accidental network call in a test.
+- `constraints.txt` pins versions, so fixes (especially yfinance, when Yahoo changes) only arrive when we refresh it.
 
 ## Docs
 Project notes live in Notion under "AI Agent": "Project 2: Stock Agent (End-to-End Guide)".
