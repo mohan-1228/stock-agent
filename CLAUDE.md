@@ -142,7 +142,7 @@ Rules: validate inputs (unknown ticker or period gives a clear 4xx), reuse `Tool
    - 4c. One-time history backfill (`backfill.py`): ~5 years of daily closes into `prices`, batches of 100 with a pause and one retry, safe to re-run. No page changes; longer chart ranges are a later PR. Follow-up: index on `prices(ticker, trade_date)` after measuring. *done*
    - 4d. Index `idx_prices_ticker_date` on `prices(ticker, trade_date)`, created by `CREATE INDEX IF NOT EXISTS` in `storage.SCHEMA` (existing databases get it on first open, ~0.3 s once). One-ticker lookups went from ~25 ms to under 1 ms; the database grew from 36.9 MB to 51.8 MB. *done*
    - 4e. CI: GitHub Actions runs pytest (job `pytest`) on every PR to main and every push to main, with pinned versions from `constraints.txt`. *done*
-   - 4f. Longer chart ranges (6M / 1Y / 5Y) in the company panel.
+   - 4f. Longer chart ranges (6M / 1Y / 5Y) in the company panel: 6M = 126, 1Y = 252, 5Y = 1260 trading days, each with `change_pct` from daily closes. `/prices` allows `days` up to 1261 and `step` 1 to 5; 5Y draws every 5th close (keeps the first and last). Short history: shorter chart + "Only N trading days saved", no number. *done*
 5. `/api/ask` plus the Ask-the-AI box (local model), with loading and error states.
 6. News module, `news` table, news endpoints/tools, news panel and policy/macro section.
 7. Quality pass: number checker for AI answers, 20 to 30 evaluation questions, README with screenshots.
@@ -158,6 +158,7 @@ Each milestone is done only when: tests pass, the feature works in the browser (
 - Saved prices are split- and dividend-adjusted as of the day they were last downloaded. Each daily run only re-downloads the last ~3 months, so older rows can keep an outdated adjustment after a split or dividend. This matters if we chart ranges longer than about 3 months. Fix: re-run `python backfill.py` (for example monthly); INSERT OR REPLACE refreshes all old rows with the current adjustment.
 - KVUE has only 1 saved price (likely delisted): check its last date and remove it from the ticker list.
 - Range change (1M/3M in the panel) counts saved closes, not market days. If Yahoo skipped a day for a stock, its 1M window spans 22 saved closes that cover slightly more than 21 market days, while `month_pct` is null for that stock. Rare; a market calendar would fix it.
+- 5Y needs 1,261 saved closes (1260 trading days). Yahoo's "5y" backfill gave 1,255, so most stocks show the 5Y chart with an "Only N trading days saved" note and no 5Y number until about 6 more daily runs (around 2026-12-01), or after `python backfill.py --period 10y`.
 - Yahoo data can contain bad prints; moves of 20% or more in a day are flagged for verification.
 - An 8 GB machine runs only small models; long tool results make answers slow. Keep tool outputs short.
 - Local model answers can be imprecise (for example saying "return" without "average"); the system prompt asks it to say average or median.

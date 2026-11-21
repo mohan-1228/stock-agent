@@ -169,3 +169,79 @@ def test_price_series_query_uses_the_index(tmp_path):
     # SQLite versions (e.g. "USING INDEX" vs "USING COVERING INDEX"), and CI's Linux
     # Python may bundle a different SQLite than the Mac.
     assert "idx_prices_ticker_date" in details
+
+
+# --- Longer ranges and thinning (milestone 4f) --------------------------------
+
+def test_range_definitions_are_trading_days_and_closes_are_one_more():
+    from tools import MAX_PRICE_DAYS, RANGES
+
+    assert RANGES == {"1M": 21, "3M": 63, "6M": 126, "1Y": 252, "5Y": 1260}
+    assert MAX_PRICE_DAYS == 1261  # 5Y needs 1260 moves = 1261 closes
+
+
+@pytest.mark.parametrize("label, closes", [("6M", 127), ("1Y", 253), ("5Y", 1261)])
+def test_long_ranges_use_the_right_window(tmp_path, label, closes):
+    from tools import Toolbox, range_change
+
+    history = make_history(1300)
+    conn = connect(tmp_path / "t.db")
+    save_prices(conn, history)
+    window = Toolbox(conn, {}).get_price_series("AAA", 63)["ranges"][label]
+    assert window["closes"] == closes
+    assert window["start_date"] == str(history.index[-closes].date())
+    assert window["end_date"] == str(history.index[-1].date())
+    expected = range_change(history["AAA"].tail(closes))
+    assert window["change_pct"] == round(expected, 2)
+
+
+def test_every_range_is_null_when_history_is_one_close_short(tmp_path):
+    from tools import RANGES, Toolbox
+
+    conn = connect(tmp_path / "t.db")
+    save_prices(conn, make_history(1260))  # 5Y needs 1261
+    ranges = Toolbox(conn, {}).get_price_series("AAA", 63)["ranges"]
+    assert set(ranges) == set(RANGES)
+    assert ranges["5Y"]["change_pct"] is None and ranges["5Y"]["start_date"] is None
+    assert all(ranges[label]["change_pct"] is not None for label in ("1M", "3M", "6M", "1Y"))
+
+
+def test_days_is_capped_at_1261(tmp_path):
+    from tools import Toolbox
+
+    conn = connect(tmp_path / "t.db")
+    save_prices(conn, make_history(1300))
+    result = Toolbox(conn, {}).get_price_series("AAA", 5000)
+    assert len(result["prices"]) == 1261 and result["days_covered"] == 1261
+    assert result["step"] == 1
+
+
+@pytest.mark.parametrize("n, step, expected", [
+    (11, 5, [0, 5, 10]),          # every 5th back from the last lands on the first too
+    (10, 5, [0, 4, 9]),
+    (5, 5, [0, 4]),
+    (1, 5, [0]),
+    (4, 1, [0, 1, 2, 3]),             # step 1 = unchanged
+])
+def test_thin_series_keeps_first_and_last(n, step, expected):
+    from tools import thin_series
+
+    df = pd.DataFrame({"close": range(n)})
+    assert list(thin_series(df, step)["close"]) == expected
+
+
+def test_thinned_prices_keep_ranges_from_daily_closes(tmp_path):
+    from tools import Toolbox
+
+    history = make_history(1300)
+    conn = connect(tmp_path / "t.db")
+    save_prices(conn, history)
+    toolbox = Toolbox(conn, {})
+    daily = toolbox.get_price_series("AAA", 1261)
+    weekly = toolbox.get_price_series("AAA", 1261, step=5)
+    assert weekly["ranges"] == daily["ranges"]          # thinning never touches the numbers
+    assert weekly["step"] == 5 and weekly["days_covered"] == 1261
+    assert len(weekly["prices"]) == 253                 # 1261 closes -> every 5th from the end
+    assert weekly["prices"][0] == daily["prices"][0]    # starts on the 5Y start close
+    assert weekly["prices"][-1] == daily["prices"][-1]  # ends on the latest close
+    assert weekly["prices"][0]["date"] == daily["ranges"]["5Y"]["start_date"]

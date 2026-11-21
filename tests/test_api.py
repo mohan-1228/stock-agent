@@ -132,7 +132,7 @@ def test_prices_oldest_first_and_limited(client):
 
 def test_prices_include_ranges_null_when_history_is_short(client):
     ranges = client.get("/api/stock/AAA/prices").json()["ranges"]
-    assert set(ranges) == {"1M", "3M"}
+    assert set(ranges) == {"1M", "3M", "6M", "1Y", "5Y"}
     assert ranges["1M"]["change_pct"] is None  # only 3 closes saved in this fixture
     assert ranges["3M"]["closes"] == 64
 
@@ -140,7 +140,21 @@ def test_prices_include_ranges_null_when_history_is_short(client):
 def test_prices_unknown_ticker_404_and_bad_days_422(client):
     assert client.get("/api/stock/BBB/prices").status_code == 404  # no prices saved for BBB
     assert client.get("/api/stock/AAA/prices?days=0").status_code == 422
-    assert client.get("/api/stock/AAA/prices?days=253").status_code == 422
+    assert client.get("/api/stock/AAA/prices?days=1261").status_code == 200  # 5Y = 1261 closes
+    assert client.get("/api/stock/AAA/prices?days=1262").status_code == 422
+    assert client.get("/api/stock/AAA/prices?step=0").status_code == 422
+    assert client.get("/api/stock/AAA/prices?step=6").status_code == 422
+
+
+def test_prices_step_field_and_old_fields_stay(client):
+    daily = client.get("/api/stock/AAA/prices?days=3").json()
+    weekly = client.get("/api/stock/AAA/prices?days=3&step=5").json()
+    assert {"as_of", "ticker", "name", "prices", "ranges"} <= set(daily)
+    assert daily["step"] == 1 and weekly["step"] == 5
+    assert daily["days_covered"] == weekly["days_covered"] == 3
+    # 3 closes, every 5th from the end plus the first: first and last only.
+    assert [p["date"] for p in weekly["prices"]] == ["2026-11-18", "2026-11-20"]
+    assert weekly["ranges"] == daily["ranges"]
 
 
 def test_groups_all_and_one(client):

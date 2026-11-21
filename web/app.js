@@ -402,9 +402,23 @@ function renderGroups() {
 // anything else means "panel closed". Clicks, the back button, a reload and a shared link
 // all change the hash, and one listener (route) reacts to it.
 
-const PRICE_DAYS = 64;          // fetched once per ticker: enough closes for 3M (63 moves = 64 closes)
-// Used only if an older API answer has no `ranges`; the API's `closes` value wins.
-const RANGE_FALLBACK = { "1M": { closes: 22, words: "1 month" }, "3M": { closes: 64, words: "3 months" } };
+// Two price downloads per ticker, each fetched once and cached:
+//   daily:  the last 253 daily closes, enough for 1M, 3M, 6M and 1Y.
+//   weekly: 5 years thinned by Python to one close every 5 trading days (~253 points).
+// Both answers carry the same `ranges`, computed in Python from daily closes.
+const PRICE_SOURCES = {
+  daily: "days=253",
+  weekly: "days=1261&step=5",
+};
+// Which download each range draws from. `closes` is used only if an older API answer
+// has no `ranges` (the API's value wins); `years` = show the year on the x axis.
+const RANGE_INFO = {
+  "1M": { closes: 22, words: "1 month", source: "daily", years: false },
+  "3M": { closes: 64, words: "3 months", source: "daily", years: false },
+  "6M": { closes: 127, words: "6 months", source: "daily", years: false },
+  "1Y": { closes: 253, words: "1 year", source: "daily", years: true },
+  "5Y": { closes: 1261, words: "5 years", source: "weekly", years: true },
+};
 const TICKER_RE = /^[A-Za-z0-9.\-]{1,10}$/;  // same pattern the API accepts
 const PANEL_ANIMATION_MS = 200; // must match the CSS transition in index.html
 
@@ -413,12 +427,11 @@ const panel = {
   ticker: null,          // ticker currently shown; late answers for other tickers are ignored
   opener: null,          // the link that opened the panel, to give focus back on close
   pushedHistory: false,  // true when OUR click added the history entry (so closing = history.back())
-  range: "3M",           // "1M" or "3M": a key of the API's `ranges`
-  prices: null,          // last /prices list for the current ticker
-  ranges: null,          // last /prices `ranges` (change_pct per range, computed in Python)
+  range: "3M",           // a key of RANGE_INFO and of the API's `ranges`
+  data: {},              // "daily" / "weekly" -> /prices answer for the current ticker
 };
 const stockCache = new Map();   // ticker -> Promise of /api/stock/{ticker}
-const pricesCache = new Map();  // ticker -> Promise of /api/stock/{ticker}/prices
+const pricesCache = new Map();  // "TICKER daily" / "TICKER weekly" -> Promise of /api/stock/{ticker}/prices
 let priceChart = null;
 let closeTimer = null;
 let inertNodes = [];
@@ -433,12 +446,13 @@ function cachedFetch(cache, key, url) {
   return cache.get(key);
 }
 
-/** "2026-11-20" -> "Nov 20" for the chart's x axis. */
-function shortDate(isoDate) {
+/** "2026-11-20" -> "Nov 20" for the chart's x axis, or "Nov 2026" when the range spans years. */
+function shortDate(isoDate, withYear) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate));
   if (!match) return String(isoDate);
   const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const format = withYear ? { month: "short", year: "numeric" } : { month: "short", day: "numeric" };
+  return date.toLocaleDateString("en-US", format);
 }
 
 /** Ticker from the hash, or null when the hash is not a stock link. */
@@ -472,8 +486,7 @@ function openPanel(ticker) {
   }
   if (ticker === panel.ticker) return;   // already showing it
   panel.ticker = ticker;
-  panel.prices = null;
-  panel.ranges = null;
+  panel.data = {};
   showStock(ticker);
   showPrices(ticker);
 }
@@ -504,8 +517,7 @@ function hidePanel() {
   panel.ticker = null;
   panel.opener = null;
   panel.pushedHistory = false;
-  panel.prices = null;
-  panel.ranges = null;
+  panel.data = {};
 }
 
 /** Close button, Escape and backdrop all come here. */
@@ -576,7 +588,9 @@ function setupPanel() {
       for (const other of document.querySelectorAll("#stock-panel [data-range]")) {
         other.setAttribute("aria-pressed", String(other === button));
       }
-      if (panel.prices) drawPriceChart();
+      if (!panel.ticker) return;
+      if (panel.data[RANGE_INFO[panel.range].source]) drawPriceChart();
+      else showPrices(panel.ticker);   // first 5Y click downloads the weekly points
     });
   }
 }
@@ -709,6 +723,7 @@ function chartPlaceholder(node) {
   destroyPriceChart();
   document.getElementById("panel-chart-box").hidden = true;
   document.getElementById("panel-chart-note").hidden = true;
+  document.getElementById("panel-chart-step").hidden = true;
   document.getElementById("panel-chart-message").replaceChildren(...(node ? [node] : []));
   renderRangeChange(null);   // no chart, no range number
 }
@@ -726,7 +741,7 @@ function renderRangeChange(range) {
     return;
   }
   const parts = pctParts(value);
-  const words = (RANGE_FALLBACK[panel.range] || {}).words || panel.range;
+  const words = (RANGE_INFO[panel.range] || {}).words || panel.range;
   box.className = `text-sm tabular-nums font-semibold whitespace-nowrap ${parts.cls}`;
   const visible = el("span", "", `${parts.text} over ${panel.range}`);
   visible.setAttribute("aria-hidden", "true");
@@ -740,11 +755,15 @@ async function showPrices(ticker) {
     panelMessage(message, "No chart: the ticker symbol is not valid.");
     return;
   }
+  const source = RANGE_INFO[panel.range].source;   // download what the selected range needs
   chartPlaceholder(el("span", "block h-64 animate-pulse rounded-lg bg-slate-200 dark:bg-slate-700"));
   message.setAttribute("aria-busy", "true");
   try {
-    const data = await cachedFetch(pricesCache, ticker, `/api/stock/${encodeURIComponent(ticker)}/prices?days=${PRICE_DAYS}`);
+    const url = `/api/stock/${encodeURIComponent(ticker)}/prices?${PRICE_SOURCES[source]}`;
+    const data = await cachedFetch(pricesCache, `${ticker} ${source}`, url);
     if (ticker !== panel.ticker) return;
+    // The user switched to a range that needs the other download meanwhile: that call draws.
+    if (RANGE_INFO[panel.range].source !== source) return;
     const prices = Array.isArray(data.prices) ? data.prices : [];
     // If the stats call failed, the prices answer still carries the company name.
     const nameEl = document.getElementById("panel-name");
@@ -755,11 +774,15 @@ async function showPrices(ticker) {
       panelMessage(message, `Not enough price history to draw a chart (${withClose} day${withClose === 1 ? "" : "s"} saved).`);
       return;
     }
-    panel.prices = prices;
-    panel.ranges = data.ranges && typeof data.ranges === "object" ? data.ranges : null;
+    panel.data[source] = {
+      prices,
+      ranges: data.ranges && typeof data.ranges === "object" ? data.ranges : null,
+      step: isNumber(data.step) ? data.step : 1,
+      daysCovered: isNumber(data.days_covered) ? data.days_covered : null,
+    };
     drawPriceChart();
   } catch (error) {
-    if (ticker !== panel.ticker) return;
+    if (ticker !== panel.ticker || RANGE_INFO[panel.range].source !== source) return;
     chartPlaceholder(null);
     const retry = error.status ? null : () => showPrices(ticker);
     panelMessage(message, panelErrorText(error, `No saved price history for ${ticker} yet.`), retry);
@@ -769,12 +792,20 @@ async function showPrices(ticker) {
 }
 
 function drawPriceChart() {
-  const range = panel.ranges ? panel.ranges[panel.range] : null;
-  const closes = range && isNumber(range.closes) ? range.closes : RANGE_FALLBACK[panel.range].closes;
-  const points = panel.prices.slice(-closes);   // 1M = the last 22 closes (21 daily moves), like month_pct
+  const info = RANGE_INFO[panel.range];
+  const data = panel.data[info.source];
+  const range = data.ranges ? data.ranges[panel.range] : null;
+  const closes = range && isNumber(range.closes) ? range.closes : info.closes;
+  const weekly = data.step > 1;
+  // Daily: 1M = the last 22 closes (21 daily moves), like month_pct. Weekly: Python already
+  // picked the 5Y window and thinned it, so draw every point it sent.
+  const points = weekly ? data.prices : data.prices.slice(-closes);
+  // Daily closes behind the line (from the API when thinned; a plain count otherwise).
+  const saved = weekly && isNumber(data.daysCovered) ? data.daysCovered : points.length;
   const box = document.getElementById("panel-chart-box");
   const message = document.getElementById("panel-chart-message");
   const note = document.getElementById("panel-chart-note");
+  document.getElementById("panel-chart-step").hidden = !weekly;
 
   destroyPriceChart();   // never stack a new chart on top of an old one
   if (typeof Chart === "undefined") {
@@ -787,14 +818,16 @@ function drawPriceChart() {
   renderRangeChange(range);
 
   // Fewer saved days than the range asks for: say so instead of pretending.
-  note.hidden = points.length >= closes;
-  note.textContent = `Only ${points.length} trading days saved so far.`;
+  note.hidden = saved >= closes;
+  note.textContent = `Only ${saved} trading days saved so far.`;
 
   const canvas = document.getElementById("price-chart");
   const first = points[0].date;
   const last = points[points.length - 1].date;
   canvas.setAttribute("aria-label",
-    `Line chart of ${panel.ticker} daily closing prices over ${points.length} trading days, from ${prettyDate(first)} to ${prettyDate(last)}.`);
+    weekly
+      ? `Line chart of ${panel.ticker} closing prices, one point every 5 trading days (${points.length} points covering ${saved} trading days), from ${prettyDate(first)} to ${prettyDate(last)}.`
+      : `Line chart of ${panel.ticker} daily closing prices over ${points.length} trading days, from ${prettyDate(first)} to ${prettyDate(last)}.`);
 
   const colors = chartColors();
   const dark = document.documentElement.classList.contains("dark");
@@ -803,7 +836,7 @@ function drawPriceChart() {
   priceChart = new Chart(canvas, {
     type: "line",
     data: {
-      labels: points.map((p) => shortDate(p.date)),
+      labels: points.map((p) => shortDate(p.date, info.years)),
       datasets: [{
         label: "Close",
         data: points.map((p) => (isNumber(p.close) ? p.close : null)),
@@ -911,7 +944,7 @@ function setupTheme() {
       applyChartTheme(colors);
       moversChart.update();
     }
-    if (priceChart && panel.prices) drawPriceChart();  // redraw the panel chart in the new colours
+    if (priceChart && panel.data[RANGE_INFO[panel.range].source]) drawPriceChart();  // redraw the panel chart in the new colours
   });
 }
 
