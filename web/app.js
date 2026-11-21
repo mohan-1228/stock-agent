@@ -1,4 +1,4 @@
-// Stock Agent dashboard (milestones 3 and 4).
+// Stock Agent dashboard (milestones 3 to 5).
 // Plain JavaScript, no build step. Every piece of text that comes from the API is put on
 // the page with textContent (never innerHTML), so a strange company name can never run as code.
 "use strict";
@@ -20,12 +20,20 @@ let moversChart = null;
 
 // ---------- small helpers ----------
 
-/** Fetch JSON with a timeout. Throws an Error with a readable message on any failure. */
-async function fetchJson(url) {
+/**
+ * Fetch JSON with a timeout. Throws an Error with a readable message on any failure.
+ * GET by default; pass { method: "POST", body } to send JSON, and timeoutMs for slow calls.
+ */
+async function fetchJson(url, { method = "GET", body, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const init = { method, signal: controller.signal };
+  if (body !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(body);
+  }
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, init);
     if (!response.ok) {
       let detail = "";
       try { detail = (await response.json()).detail; } catch (e) { /* not JSON */ }
@@ -487,6 +495,7 @@ function openPanel(ticker) {
   if (ticker === panel.ticker) return;   // already showing it
   panel.ticker = ticker;
   panel.data = {};
+  resetPanelAsk(ticker);
   showStock(ticker);
   showPrices(ticker);
 }
@@ -515,6 +524,7 @@ function hidePanel() {
 
   panel.open = false;
   panel.ticker = null;
+  resetPanelAsk(null);
   panel.opener = null;
   panel.pushedHistory = false;
   panel.data = {};
@@ -948,6 +958,161 @@ function setupTheme() {
   });
 }
 
+// ---------- Ask the AI (milestone 5) ----------
+// Two boxes (the global one and the one in the company panel) share this code.
+// The answer is untrusted model output: it only ever goes on the page through textContent.
+
+const ASK_MAX_CHARS = 500;          // same limit as the API
+const ASK_TIMEOUT_MS = 190000;      // a bit longer than the server's 180 s, so its clear 504 message arrives first
+const ASK_WAIT_NOTE = "The local model usually takes 1 to 3 minutes.";
+const askBoxes = [];
+let askBusy = false;                // the server answers one question at a time, so the page does too
+let panelAskBox = null;
+
+/** Find a box's elements by their id prefix ("ask" or "panel-ask"). */
+function askElements(prefix) {
+  const get = (name) => document.getElementById(`${prefix}-${name}`);
+  return {
+    form: get("form"), label: get("label"), input: get("input"), count: get("count"), button: get("button"),
+    busyNote: get("busy-note"), status: get("status"), waiting: get("waiting"), error: get("error"),
+    result: get("result"), answer: get("answer"), meta: get("meta"), tools: get("tools"),
+  };
+}
+
+function setupAskBox(prefix, getTicker) {
+  const box = { ...askElements(prefix), getTicker, token: 0 };
+  box.input.addEventListener("input", () => updateAskCount(box));
+  // Enter sends; Shift+Enter makes a new line. isComposing: don't send halfway through typing Japanese/Chinese etc.
+  box.input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      box.form.requestSubmit();
+    }
+  });
+  box.form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    askQuestion(box);
+  });
+  askBoxes.push(box);
+  return box;
+}
+
+function updateAskCount(box) {
+  box.count.textContent = `${box.input.value.length} / ${ASK_MAX_CHARS}`;
+}
+
+/** Disable every Ask button while one question runs; the box that asked says "Thinking…". */
+function setAskBusy(busy, owner) {
+  askBusy = busy;
+  for (const box of askBoxes) {
+    box.button.disabled = busy;
+    box.button.textContent = busy && box === owner ? "Thinking…" : "Ask";
+    box.busyNote.hidden = !busy || box === owner;
+  }
+}
+
+function clearAskOutput(box) {
+  box.status.textContent = "";
+  box.error.textContent = "";
+  box.waiting.hidden = true;
+  box.result.hidden = true;
+  box.answer.textContent = "";
+  box.meta.textContent = "";
+  box.tools.textContent = "";
+}
+
+/** "get_movers(period=week, direction=losers, n=5)" from {name, input}. */
+function toolLabel(tool) {
+  const input = tool && typeof tool.input === "object" && tool.input !== null ? tool.input : {};
+  const args = Object.entries(input).map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`);
+  return `${tool && tool.name ? tool.name : "unknown"}(${args.join(", ")})`;
+}
+
+/** Friendly message for each way asking can fail. */
+function askErrorText(error) {
+  if (error.name === "AbortError") return `No answer after ${ASK_TIMEOUT_MS / 1000} seconds. The model may still be busy; try again in a moment.`;
+  if (error.status === 429) return error.message;   // the server's "busy, try again" text
+  if (error.status === 504) return "Took too long (over 3 minutes). Try a shorter, more specific question.";
+  if (error.status === 503) return error.message;   // Ollama not running / model not installed / no data yet
+  if (error.status === 422) return `Type a question (1 to ${ASK_MAX_CHARS} characters).`;
+  if (error.status === 404) return error.message;   // unknown ticker
+  if (error.status) return `Something went wrong (HTTP ${error.status}). Try again.`;
+  return "Could not reach the API. Is uvicorn running?";
+}
+
+function renderAnswer(box, data) {
+  box.answer.textContent = data.answer ? String(data.answer) : "(The model returned an empty answer.)";
+  const parts = [];
+  if (data.as_of) parts.push(`Data as of ${prettyDate(data.as_of)}`);
+  if (isNumber(data.seconds)) parts.push(`answered in ${data.seconds.toFixed(1)} s`);
+  box.meta.textContent = parts.join(" · ");
+  const tools = Array.isArray(data.tools_used) ? data.tools_used : [];
+  box.tools.textContent = tools.length
+    ? `Tools used: ${tools.map(toolLabel).join(", ")}`
+    : "Tools used: none, so any numbers in this answer did not come from the data.";
+  box.result.hidden = false;
+}
+
+async function askQuestion(box) {
+  if (askBusy) return;
+  const question = box.input.value.trim();
+  clearAskOutput(box);
+  if (!question || question.length > ASK_MAX_CHARS) {
+    box.error.textContent = `Type a question (1 to ${ASK_MAX_CHARS} characters).`;
+    box.input.focus();
+    return;
+  }
+  const ticker = box.getTicker();
+  const token = ++box.token;   // if the panel switches stock meanwhile, this answer is dropped
+  setAskBusy(true, box);
+  box.status.textContent = `Asking the local model. ${ASK_WAIT_NOTE}`;
+  const started = Date.now();
+  box.waiting.textContent = "Waiting 0 s";
+  box.waiting.hidden = false;
+  const timer = setInterval(() => {
+    box.waiting.textContent = `Waiting ${Math.round((Date.now() - started) / 1000)} s`;
+  }, 1000);
+
+  try {
+    const body = ticker ? { question, ticker } : { question };
+    const data = await fetchJson("/api/ask", { method: "POST", body, timeoutMs: ASK_TIMEOUT_MS });
+    if (token !== box.token) return;
+    renderAnswer(box, data);
+    box.status.textContent = "Answer ready.";
+  } catch (error) {
+    if (token !== box.token) return;
+    box.status.textContent = "";
+    box.error.textContent = askErrorText(error);
+  } finally {
+    clearInterval(timer);
+    if (token === box.token) box.waiting.hidden = true;
+    const focusLost = document.activeElement === document.body || document.activeElement === box.button;
+    setAskBusy(false, box);
+    // A disabled button drops keyboard focus; put it somewhere useful instead of the top of the page.
+    if (focusLost && token === box.token) (box.result.hidden ? box.input : box.answer).focus();
+  }
+}
+
+/** The panel shows a new stock (or closes): new label, empty box, and any late answer is dropped. */
+function resetPanelAsk(ticker) {
+  if (!panelAskBox) return;
+  panelAskBox.token += 1;
+  clearAskOutput(panelAskBox);
+  panelAskBox.input.value = "";
+  updateAskCount(panelAskBox);
+  const valid = typeof ticker === "string" && TICKER_RE.test(ticker);
+  document.getElementById("panel-ask").hidden = !valid;
+  if (valid) {
+    panelAskBox.label.textContent = `Ask about ${ticker}`;
+    panelAskBox.input.placeholder = `For example "How did ${ticker} do this month?"`;
+  }
+}
+
+function setupAsk() {
+  setupAskBox("ask", () => null);
+  panelAskBox = setupAskBox("panel-ask", () => panel.ticker);
+}
+
 // ---------- start ----------
 
 async function init() {
@@ -955,6 +1120,7 @@ async function init() {
   setupTabs();
   setupDirection();
   setupPanel();
+  setupAsk();   // before route(): a shared #/stock/TICKER link fills in the panel's Ask box
   route();  // a reload or shared link with #/stock/TICKER opens the panel straight away
   groupSkeletons();
   skeletonRows(document.getElementById("movers-body"), 6, 8);

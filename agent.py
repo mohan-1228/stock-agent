@@ -5,10 +5,11 @@
 Needs AWS credentials and the BEDROCK_MODEL_ID environment variable (the model or
 inference-profile ID shown in the Amazon Bedrock console).
 """
+import json
 import os
 import sys
+import time
 
-import json
 import config
 from storage import connect
 from tools import TOOL_SPECS, Toolbox
@@ -24,25 +25,51 @@ Rules:
 - Say which trading day the data is from (the as_of field).
 - Weekly and monthly returns are rolling windows of 5 and 21 trading days.
 - Very large one-day moves can be bad data, so mention that when one appears.
+- When you give a group's return, say whether it is the average or the median.
+- Never tell the user to buy or sell, and never predict prices.
 - Keep answers short and plain. This is information, not investment advice."""
+
+STEP_LIMIT_ANSWER = "I couldn't finish within the step limit. Try a narrower question."
+TIME_LIMIT_ANSWER = "I ran out of time before finishing. Try a shorter question."
 
 
 def run_agent(client, question, toolbox, max_steps=MAX_STEPS, verbose=False):
     """Ask the model, run any tools it requests, give it the results, repeat until it answers."""
+    return run_agent_with_trace(client, question, toolbox, max_steps=max_steps, verbose=verbose)["answer"]
+
+
+def run_agent_with_trace(client, question, toolbox, context=None, deadline=None, max_steps=MAX_STEPS, verbose=False):
+    """Same loop as run_agent, but also reports which tools were used (for transparency on the page).
+
+    context:  optional sentence written by the app (never by the user), e.g. which stock is open.
+              It goes into the system prompt, separate from the user's question.
+    deadline: optional time.monotonic() value. The loop checks it before each model call and stops
+              when it has passed, so a timed-out question does not keep the model busy for long.
+    Returns {"answer": str, "tools_used": [{"name": ..., "input": ...}, ...]}.
+    """
+    system = SYSTEM_PROMPT
+    if context:
+        system += f"\n\nApp context (set by the app, not the user): {context}"
     messages = [{"role": "user", "content": [{"text": question}]}]
+    tools_used = []
+
     for _ in range(max_steps):
-        response = client.converse(SYSTEM_PROMPT, messages, TOOL_SPECS)
+        if deadline is not None and time.monotonic() > deadline:
+            return {"answer": TIME_LIMIT_ANSWER, "tools_used": tools_used}
+        response = client.converse(system, messages, TOOL_SPECS)
         message = response["output"]["message"]
         messages.append(message)
 
         if response["stopReason"] != "tool_use":  # the model is done and has written its answer
-            return "".join(block["text"] for block in message["content"] if "text" in block)
+            answer = "".join(block["text"] for block in message["content"] if "text" in block)
+            return {"answer": answer, "tools_used": tools_used}
 
         results = []
         for block in message["content"]:
             if "toolUse" not in block:
                 continue
             call = block["toolUse"]
+            tools_used.append({"name": call["name"], "input": call["input"]})
             if verbose:
                 print(f"  -> tool: {call['name']}({call['input']})")
             try:
@@ -60,7 +87,7 @@ def run_agent(client, question, toolbox, max_steps=MAX_STEPS, verbose=False):
             )
         messages.append({"role": "user", "content": results})
 
-    return "I couldn't finish within the step limit. Try a narrower question."
+    return {"answer": STEP_LIMIT_ANSWER, "tools_used": tools_used}
 
 
 class BedrockClient:
@@ -166,10 +193,11 @@ def _from_ollama_response(data):
 class LocalClient:
     """Talks to a model running on this computer through Ollama. Free and private."""
 
-    def __init__(self, model, url="http://localhost:11434", num_ctx=8192, session=None):
+    def __init__(self, model, url="http://localhost:11434", num_ctx=8192, session=None, timeout=300):
         import requests  # imported here, same idea as boto3 above
 
         self.model = model
+        self.timeout = timeout  # seconds to wait for one model reply
         self.url = url.rstrip("/")
         self.num_ctx = num_ctx
         self.session = session or requests
@@ -183,7 +211,7 @@ class LocalClient:
             "think": False,  # skip the long "thinking" text; we want fast tool calls
             "options": {"num_ctx": self.num_ctx, "temperature": 0},
         }
-        response = self.session.post(f"{self.url}/api/chat", json=body, timeout=300)
+        response = self.session.post(f"{self.url}/api/chat", json=body, timeout=self.timeout)
         response.raise_for_status()
         return _from_ollama_response(response.json())
 

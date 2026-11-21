@@ -6,8 +6,14 @@ always show the same numbers from the same logic.
 Run it (localhost only: the API has no login, so never use --host 0.0.0.0):
     python -m uvicorn api:app --reload
 Then open http://127.0.0.1:8000/docs to try every endpoint in the browser.
+
+Everything is read-only except POST /api/ask, which runs the local AI agent (Ollama).
 """
+import asyncio
 import logging
+import os
+import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path as FilePath
 from typing import Literal
@@ -15,8 +21,11 @@ from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
+import requests
 
 import config
+from agent import LocalClient, run_agent_with_trace
 from storage import connect
 from tools import MAX_PRICE_DAYS, MAX_STEP, Toolbox
 from universe import load_groups, load_universe
@@ -143,6 +152,129 @@ def group(name: str = Path(pattern=GROUP_PATTERN), tb: Toolbox = Depends(get_too
 @app.get("/api/outliers")
 def outliers(tb: Toolbox = Depends(get_toolbox)):
     return _run(tb.get_outliers)
+
+
+# ---------- Ask the AI ----------
+# The local model runs on an 8 GB Mac and takes about 1 to 3 minutes per question
+# (measured 64 s and 74 s for one-tool questions), so only one question runs at a time.
+
+DEFAULT_OLLAMA_MODEL = "qwen3:4b"
+ASK_TIMEOUT_SECONDS = 180         # the page gets a clear 504 after this
+MODEL_CALL_TIMEOUT_SECONDS = 120  # one reply from Ollama; also limits how long a timed-out run lingers
+ASK_RETRY_AFTER_SECONDS = 15
+MAX_QUESTION_CHARS = 500
+BUSY_MESSAGE = "The AI is answering another question. Try again in a moment."
+
+# One question at a time. Taken by the request, released by the worker thread when the agent
+# has really finished (even after a timeout), so a second question never piles onto the model.
+ASK_LOCK = threading.Lock()
+
+
+class AskRequest(BaseModel):
+    """Body of POST /api/ask. Spaces around the text are removed before the length check."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    ticker: str | None = Field(default=None, pattern=TICKER_PATTERN)
+
+
+def ollama_model() -> str:
+    return os.environ.get("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
+
+
+def get_ask_client() -> LocalClient:
+    """The model client. Always local (Ollama), never Bedrock. Tests replace this function."""
+    return LocalClient(ollama_model(), timeout=MODEL_CALL_TIMEOUT_SECONDS)
+
+
+def _ticker_context(tb: Toolbox, ticker: str) -> str:
+    """A sentence about the open stock, built only from our own data (never from the request text).
+
+    The ticker already matched TICKER_PATTERN; get_stock must also find it (404 otherwise).
+    We then use the snapshot's symbol and the name from tickers.csv, not what the browser sent.
+    """
+    stock = _run(tb.get_stock, ticker)["stock"]
+    label = f"{stock['ticker']} ({stock['name']})" if stock.get("name") else stock["ticker"]
+    return f"the user has the stock panel open for {label}. Use the tools for every number."
+
+
+def _answer_question(client, question: str, context: str | None, deadline: float) -> dict:
+    """Runs in a worker thread. Uses its own database connection (the request's one is closed
+    as soon as the response is sent, which can be before this finishes) and always frees the lock."""
+    try:
+        conn = connect(config.DB_PATH, check_same_thread=False)
+        try:
+            tb = Toolbox(conn, NAMES, config.SAME_COMPANY_GROUPS, config.OUTLIER_DAY_PCT, theme_groups=GROUPS)
+            return run_agent_with_trace(client, question, tb, context=context, deadline=deadline)
+        finally:
+            conn.close()
+    finally:
+        ASK_LOCK.release()
+
+
+def _log_late_failure(future: asyncio.Future) -> None:
+    """After a timeout nobody waits for the worker any more; still log it if it crashed."""
+    if not future.cancelled() and future.exception() is not None:
+        logger.error("Ask worker failed after the timeout", exc_info=future.exception())
+
+
+@app.post("/api/ask")
+async def ask(body: AskRequest, tb: Toolbox = Depends(get_toolbox)):
+    """Answer one question with the local AI agent. Returns the answer and the tools it used."""
+    if tb.as_of is None:
+        raise HTTPException(status_code=503, detail="No saved data yet. Run main.py first.")
+    context = _ticker_context(tb, body.ticker) if body.ticker else None
+
+    if not ASK_LOCK.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429, detail=BUSY_MESSAGE, headers={"Retry-After": str(ASK_RETRY_AFTER_SECONDS)}
+        )
+    started = time.monotonic()
+    try:
+        client = get_ask_client()
+        # The agent blocks for minutes, so it runs in a worker thread and the server stays responsive.
+        future = asyncio.get_running_loop().run_in_executor(
+            None, _answer_question, client, body.question, context, started + ASK_TIMEOUT_SECONDS
+        )
+    except BaseException:
+        ASK_LOCK.release()  # the worker never started, so it cannot release the lock itself
+        raise
+
+    try:
+        # shield: on timeout we stop waiting, but the worker keeps its lock until it really ends.
+        result = await asyncio.wait_for(asyncio.shield(future), timeout=ASK_TIMEOUT_SECONDS)
+    except TimeoutError:
+        future.add_done_callback(_log_late_failure)
+        raise HTTPException(
+            status_code=504,
+            detail=f"The local model took longer than {ASK_TIMEOUT_SECONDS} seconds. "
+            "Try a shorter, more specific question.",
+        )
+    except requests.Timeout:
+        raise HTTPException(
+            status_code=504,
+            detail=f"The local model took longer than {MODEL_CALL_TIMEOUT_SECONDS} seconds to reply. "
+            "Try a shorter, more specific question.",
+        )
+    except requests.ConnectionError:
+        raise HTTPException(
+            status_code=503,
+            detail="The local AI model is not running. Start the Ollama app (or run: ollama serve) and try again.",
+        )
+    except requests.HTTPError as err:
+        if err.response is not None and err.response.status_code == 404:
+            model = ollama_model()
+            raise HTTPException(
+                status_code=503, detail=f"The model {model} is not installed. Run: ollama pull {model}"
+            )
+        raise  # anything else: the middleware logs it and answers "Internal error."
+
+    return {
+        "answer": result["answer"],
+        "tools_used": result["tools_used"],
+        "as_of": tb.as_of,
+        "seconds": round(time.monotonic() - started, 1),
+    }
 
 
 # Serve the dashboard (web/index.html at "/", web/app.js at "/app.js").
