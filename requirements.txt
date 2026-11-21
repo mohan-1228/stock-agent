@@ -4,3 +4,6 @@ pytest
 lxml
 requests
 boto3
+fastapi
+uvicorn
+httpx

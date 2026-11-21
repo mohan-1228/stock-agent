@@ -24,9 +24,14 @@ CREATE TABLE IF NOT EXISTS prices (
 """
 
 
-def connect(db_path):
+def connect(db_path, check_same_thread=True):
+    """Open the database and create the tables if needed.
+
+    The API passes check_same_thread=False: FastAPI may open the connection on one worker
+    thread and use it on another. That is safe because each request gets its own connection.
+    """
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, check_same_thread=check_same_thread)
     conn.executescript(SCHEMA)
     return conn
 
