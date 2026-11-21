@@ -4,3 +4,4 @@ data/
 reports/
 run.log
 .venv/
+logs/

@@ -59,6 +59,33 @@ python -m pip freeze  # replace the version lines in constraints.txt with this o
 ```
 CI then confirms the new versions on Linux before merge.
 
+### Daily schedule (launchd, this Mac only; run from the project folder; no sudo needed)
+Runs `scripts/run_daily.sh` at 6:05 pm local time (must be America/Chicago: `readlink /etc/localtime`), Monday to Friday. Holidays: main.py skips by itself.
+```bash
+# Install: fill in the real path, check, load
+mkdir -p logs
+sed "s|__PROJECT_DIR__|$PWD|g" launchd/local.stock-agent.daily.plist > ~/Library/LaunchAgents/local.stock-agent.daily.plist
+plutil -lint ~/Library/LaunchAgents/local.stock-agent.daily.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.stock-agent.daily.plist
+launchctl print gui/$(id -u)/local.stock-agent.daily | grep -E "state|last exit code"
+
+# Test now without waiting for 6:05, then read the log
+launchctl kickstart gui/$(id -u)/local.stock-agent.daily
+tail -f logs/daily.log          # Ctrl+C stops watching; logs/launchd.log only has text if the wrapper itself failed
+
+# Catch up a missed day by hand (only after the 3 pm CT close)
+scripts/run_daily.sh --force
+
+# Uninstall
+launchctl bootout gui/$(id -u)/local.stock-agent.daily
+rm ~/Library/LaunchAgents/local.stock-agent.daily.plist
+```
+After editing the template or moving the project: uninstall, then install again.
+- Asleep at 6:05: launchd runs the job once on wake. A wake on a later day (for example Saturday morning) makes main.py skip, so that day is missed.
+- Powered off or restarted: no catch-up. With FileVault on, nothing runs until someone logs in.
+- So the system must never sleep (System Settings → Energy → "Prevent automatic sleeping when the display is off"; the screen may sleep).
+- A missed day: the `prices` table heals itself on the next run (it re-downloads ~3 months), and only that day's `daily_returns` snapshot (and report) stays missing. To recover it, run `scripts/run_daily.sh --force` by hand after the close. No automatic catch-up on purpose: a `--force` run during market hours would save a partial intraday bar as a full day.
+
 ## Layout
 | Path | Job |
 |---|---|
@@ -69,6 +96,8 @@ CI then confirms the new versions on Linux before merge.
 | analysis.py | Returns, movers, top companies (dedupes share classes), outliers |
 | storage.py | SQLite: `save_snapshot`, `latest_snapshot`, `ticker_history`, `save_prices`, `price_series` |
 | report.py, main.py | Markdown report and the daily pipeline |
+| scripts/run_daily.sh | Wrapper launchd runs: project .venv Python, lock (one run at a time), timestamped log in `logs/daily.log` (rotated at ~1 MB, one old file kept) |
+| launchd/local.stock-agent.daily.plist | LaunchAgent template (weekdays 6:05 pm); `__PROJECT_DIR__` is filled in at install, never commit real paths |
 | tools.py | `Toolbox` + `TOOL_SPECS` (the agent's tools) |
 | agent.py | `run_agent` loop, `LocalClient` (Ollama), `BedrockClient` (leave untouched) |
 | api.py | FastAPI app (to build) |
@@ -143,6 +172,7 @@ Rules: validate inputs (unknown ticker or period gives a clear 4xx), reuse `Tool
    - 4d. Index `idx_prices_ticker_date` on `prices(ticker, trade_date)`, created by `CREATE INDEX IF NOT EXISTS` in `storage.SCHEMA` (existing databases get it on first open, ~0.3 s once). One-ticker lookups went from ~25 ms to under 1 ms; the database grew from 36.9 MB to 51.8 MB. *done*
    - 4e. CI: GitHub Actions runs pytest (job `pytest`) on every PR to main and every push to main, with pinned versions from `constraints.txt`. *done*
    - 4f. Longer chart ranges (6M / 1Y / 5Y) in the company panel: 6M = 126, 1Y = 252, 5Y = 1260 trading days, each with `change_pct` from daily closes. `/prices` allows `days` up to 1261 and `step` 1 to 5; 5Y draws every 5th close (keeps the first and last). Short history: shorter chart + "Only N trading days saved", no number. *done*
+   - 4g. Daily schedule on this Mac with launchd: `scripts/run_daily.sh` + LaunchAgent template, weekdays 6:05 pm Chicago, lock file, rotated log in `logs/`. No AWS. Installed and tested with `launchctl kickstart` on 2026-11-21 (Saturday: "market closed today. Skipping.", exit 0, 19 s). *done*
 5. `/api/ask` plus the Ask-the-AI box (local model), with loading and error states.
 6. News module, `news` table, news endpoints/tools, news panel and policy/macro section.
 7. Quality pass: number checker for AI answers, 20 to 30 evaluation questions, README with screenshots.
@@ -154,6 +184,9 @@ Each milestone is done only when: tests pass, the feature works in the browser (
 - A JavaScript framework or build toolchain (React, Vite, npm). Plain HTML/JS only for now.
 
 ## Known issues
+- The daily schedule only runs while this Mac is awake and logged in (see "Daily schedule"). A missed day leaves a gap in `daily_returns` until `scripts/run_daily.sh --force` is run by hand after the close.
+- The launchd job runs scripts from the working folder, so changes to run_daily.sh or main.py on an unmerged branch affect the scheduled run while that branch is checked out.
+- The wrapper's lock treats a lock whose pid is no longer running as stale. If a crash left a lock and the OS later reused that pid for another process, runs would log "skipped" until reboot; delete `logs/run.lock` if the log shows that while nothing is running.
 - KVUE returns no data (likely delisted/merged); review the ticker list occasionally.
 - Saved prices are split- and dividend-adjusted as of the day they were last downloaded. Each daily run only re-downloads the last ~3 months, so older rows can keep an outdated adjustment after a split or dividend. This matters if we chart ranges longer than about 3 months. Fix: re-run `python backfill.py` (for example monthly); INSERT OR REPLACE refreshes all old rows with the current adjustment.
 - KVUE has only 1 saved price (likely delisted): check its last date and remove it from the ticker list.
