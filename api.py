@@ -8,6 +8,7 @@ Run it (localhost only: the API has no login, so never use --host 0.0.0.0):
 Then open http://127.0.0.1:8000/docs to try every endpoint in the browser.
 
 Everything is read-only except POST /api/ask, which runs the local AI agent (Ollama).
+The news endpoints never fetch from the internet; they only read what news.py saved.
 """
 import asyncio
 import logging
@@ -27,7 +28,7 @@ import requests
 import config
 from agent import LocalClient, run_agent_with_trace
 from storage import connect
-from tools import MAX_PRICE_DAYS, MAX_STEP, Toolbox
+from tools import MAX_NEWS_ITEMS, MAX_PRICE_DAYS, MAX_STEP, Toolbox
 from universe import load_groups, load_universe
 
 # uvicorn already prints this logger to the console, so our error logs show up next to its own.
@@ -152,6 +153,29 @@ def group(name: str = Path(pattern=GROUP_PATTERN), tb: Toolbox = Depends(get_too
 @app.get("/api/outliers")
 def outliers(tb: Toolbox = Depends(get_toolbox)):
     return _run(tb.get_outliers)
+
+
+# ---------- News (read-only: only news.py / main.py fetch; these just read the saved headlines) ----------
+# /market and /policy must come BEFORE /{ticker}: FastAPI matches routes in order, and
+# "market" would otherwise be read as a ticker symbol.
+
+@app.get("/api/news/market")
+def news_market(n: int = Query(8, ge=1, le=MAX_NEWS_ITEMS), tb: Toolbox = Depends(get_toolbox)):
+    return tb.news_feed("market", n)
+
+
+@app.get("/api/news/policy")
+def news_policy(n: int = Query(8, ge=1, le=MAX_NEWS_ITEMS), tb: Toolbox = Depends(get_toolbox)):
+    return tb.news_feed("policy", n)
+
+
+@app.get("/api/news/{ticker}")
+def news_ticker(
+    ticker: str = Path(pattern=TICKER_PATTERN),
+    n: int = Query(8, ge=1, le=MAX_NEWS_ITEMS),
+    tb: Toolbox = Depends(get_toolbox),
+):
+    return _run(tb.ticker_news, ticker, n)
 
 
 # ---------- Ask the AI ----------

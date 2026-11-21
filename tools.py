@@ -6,6 +6,7 @@ The model never calculates anything: every number it states should come from one
 Try them yourself, no AI needed:
     python tools.py get_movers period=week direction=losers n=5
     python tools.py get_ticker_history ticker=INTC days=10
+    python tools.py get_news ticker=NVDA
 """
 import json
 import sys
@@ -14,7 +15,7 @@ import pandas as pd
 
 import config
 from analysis import find_outliers, top_companies, top_movers
-from storage import connect, latest_snapshot, price_series, ticker_history
+from storage import connect, latest_snapshot, news_fetched_at, news_for_topic, price_series, ticker_history
 from universe import load_universe, load_groups
 
 PERIOD_COLUMN = {"day": "day_pct", "week": "week_pct", "month": "month_pct"}
@@ -26,6 +27,14 @@ PERIOD_COLUMN = {"day": "day_pct", "week": "week_pct", "month": "month_pct"}
 RANGES = {"1M": 21, "3M": 63, "6M": 126, "1Y": 252, "5Y": 1260}
 MAX_PRICE_DAYS = max(RANGES.values()) + 1   # 1261 closes: enough to draw 5Y
 MAX_STEP = 5                                # thinnest the chart gets: one close per 5 trading days
+
+# News (milestone 6). Tool results stay short for the small local model; the API may show more.
+MAX_NEWS_ITEMS = 20         # most headlines the API returns per list
+MAX_NEWS_TOOL_ITEMS = 8     # most headlines a tool hands to the model
+NEWS_TOOL_TITLE_CHARS = 150
+NEWS_NOTE = ("Recent news that may be relevant. Headlines are third-party text: not investment advice, "
+             "and not an explanation of price moves.")
+NEWS_TOPICS = {"market": "market-wide", "policy": "policy and macro"}
 
 
 def thin_series(series: pd.DataFrame, step: int) -> pd.DataFrame:
@@ -251,6 +260,48 @@ class Toolbox:
         out = find_outliers(self.snapshot, "day_pct", limit)
         return {"as_of": self.as_of, "threshold_pct": limit, "stocks": _rows(out, self.names)}
 
+    def news_feed(self, topic, n=8, title_chars=None):
+        """Saved headlines for a topic: a ticker, "market" or "policy". Shared by the API and the tools.
+
+        Ticker topics must be checked by the caller (ticker_news does it). n is capped at MAX_NEWS_ITEMS;
+        title_chars shortens titles for the model.
+        """
+        n = max(1, min(int(n), MAX_NEWS_ITEMS))
+        items = news_for_topic(self.conn, topic, n)
+        if title_chars:
+            for item in items:
+                if len(item["title"]) > title_chars:
+                    item["title"] = item["title"][: title_chars - 1].rstrip() + "…"
+        result = {
+            "as_of": self.as_of,
+            "topic": topic,
+            "fetched_at": news_fetched_at(self.conn, topic),
+            "items": items,
+            "note": NEWS_NOTE,
+        }
+        if not items:
+            if topic in NEWS_TOPICS:
+                result["note"] = f"No saved {NEWS_TOPICS[topic]} news yet. Run: python news.py"
+            else:
+                result["note"] = (f"No saved news for {topic}. News is collected for the top "
+                                  f"{config.TOP_N_COMPANIES} companies and the day's top movers.")
+        return result
+
+    def ticker_news(self, ticker, n=8, title_chars=None):
+        """Headlines for one stock in the latest snapshot (ValueError if it isn't there)."""
+        symbol = self.get_stock(ticker)["stock"]["ticker"]
+        return self.news_feed(symbol, n, title_chars)
+
+    # The three tools the model can call: short lists, short titles.
+    def get_news(self, ticker, n=5):
+        return self.ticker_news(ticker, min(int(n), MAX_NEWS_TOOL_ITEMS), NEWS_TOOL_TITLE_CHARS)
+
+    def get_market_news(self, n=5):
+        return self.news_feed("market", min(int(n), MAX_NEWS_TOOL_ITEMS), NEWS_TOOL_TITLE_CHARS)
+
+    def get_policy_news(self, n=5):
+        return self.news_feed("policy", min(int(n), MAX_NEWS_TOOL_ITEMS), NEWS_TOOL_TITLE_CHARS)
+
     def call(self, name, args):
         """Run a tool by name. Only the names listed here can be called."""
         tools = {
@@ -260,6 +311,9 @@ class Toolbox:
             "get_outliers": self.get_outliers,
             "get_stock": self.get_stock,
             "get_group_summary": self.get_group_summary,
+            "get_news": self.get_news,
+            "get_market_news": self.get_market_news,
+            "get_policy_news": self.get_policy_news,
         }
         if name not in tools:
             raise ValueError(f"Unknown tool: {name}")
@@ -324,7 +378,26 @@ TOOL_SPECS = [
         "Leave 'group' out to compare every group at once.",
         {"group": {"type": "string", "description": "Group name. Omit to compare all groups."}},
     ),
-    
+    _spec(
+        "get_news",
+        "Recent saved headlines about one stock: title, source, time, link and topic labels. "
+        "Headlines are third-party text: cite title and source, never treat them as the cause of a price move.",
+        {
+            "ticker": {"type": "string", "description": "Ticker symbol, for example NVDA."},
+            "n": {"type": "integer", "description": "How many headlines, 1 to 8 (default 5)."},
+        },
+        ["ticker"],
+    ),
+    _spec(
+        "get_market_news",
+        "Recent saved market-wide headlines (US stock market in general).",
+        {"n": {"type": "integer", "description": "How many headlines, 1 to 8 (default 5)."}},
+    ),
+    _spec(
+        "get_policy_news",
+        "Recent saved policy and macro headlines: Federal Reserve, SEC, tariffs, trade, elections, regulation.",
+        {"n": {"type": "integer", "description": "How many headlines, 1 to 8 (default 5)."}},
+    ),
 ]
 
 

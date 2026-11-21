@@ -1,7 +1,9 @@
 """Daily stock report. Schedule this for 6 pm Central on weekdays.
 
 It skips market holidays by itself: if there is no price bar dated today,
-the market was closed, so it exits without saving anything.
+the market was closed, so it saves no prices. It still collects news then
+(Fed and SEC publish on holidays too). News is extra: if it fails, prices and
+the report are not affected.
 """
 import argparse
 import sys
@@ -11,9 +13,24 @@ from zoneinfo import ZoneInfo
 import config
 from analysis import compute_returns, find_outliers, top_companies
 from data import fetch_closes, fetch_market_caps
+from news import exit_if_threads_stuck, format_summary, refresh_news
 from report import build_report
 from storage import connect, save_snapshot, save_prices
 from universe import load_universe
+
+
+def run_news_step():
+    """Collect headlines for the latest saved day. Never raises: news must not break the daily run."""
+    print("\nCollecting news...", flush=True)
+    try:
+        conn = connect(config.DB_PATH)
+        try:
+            summary = refresh_news(conn)
+        finally:
+            conn.close()
+        print(format_summary(summary))
+    except Exception as exc:
+        print(f"News step failed ({type(exc).__name__}: {exc}). Prices and the report are not affected.")
 
 
 def main():
@@ -24,6 +41,7 @@ def main():
         help="run on the latest available trading day even if today has no data",
     )
     args = parser.parse_args()
+    config.load_env_file()  # settings like SEC_USER_AGENT; launchd gives us no environment
 
     today = datetime.now(ZoneInfo(config.TIMEZONE)).date()
     universe = load_universe(config.TICKERS_CSV)
@@ -37,6 +55,7 @@ def main():
     last_day = closes.index[-1].date()
     if last_day != today and not args.force:
         print(f"No market data for {today} (latest is {last_day}); market closed today. Skipping.")
+        run_news_step()
         return
 
     returns = compute_returns(closes).join(fetch_market_caps(tickers, config.MARKET_CAP_WORKERS))
@@ -58,7 +77,9 @@ def main():
 
     print(report)
     print(f"\nSaved report to {out_path} and history to {config.DB_PATH}")
+    run_news_step()
 
 
 if __name__ == "__main__":
     main()
+    exit_if_threads_stuck()  # a news request that never answered must not keep the process alive

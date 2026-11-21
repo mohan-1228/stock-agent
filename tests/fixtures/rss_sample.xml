@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Made-up items in the same shape as the Federal Reserve, SEC and CNBC RSS 2.0 feeds (checked 2026-11-21). -->
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"
+     xmlns:metadata="http://search.cnbc.com/rss/2.0/modules/siteContentMetadata">
+  <channel>
+    <title>Example press releases</title>
+    <link>https://www.example.gov/news</link>
+    <item>
+      <title>Example Board announces interest rate decision</title>
+      <link>https://www.example.gov/newsevents/pressreleases/monetary20261120a.htm</link>
+      <description>Made-up description.</description>
+      <category>Monetary Policy</category>
+      <pubDate>Fri, 20 Nov 2026 19:00:00 GMT</pubDate>
+      <guid isPermaLink="true">https://www.example.gov/newsevents/pressreleases/monetary20261120a.htm</guid>
+    </item>
+    <item>
+      <title>SEC Charges Example Fund With Fraud &amp; Misleading Investors</title>
+      <link>https://www.example.gov/newsroom/press-releases/2026-116</link>
+      <dc:creator>Example Office</dc:creator>
+      <pubDate>Fri, 20 Nov 2026 09:28:28 -0500</pubDate>
+    </item>
+    <item>
+      <title>A sponsored item that must be skipped</title>
+      <link>https://www.example.com/sponsored-thing</link>
+      <pubDate>Sat, 21 Nov 2026 10:00:00 GMT</pubDate>
+      <metadata:sponsored>true</metadata:sponsored>
+    </item>
+    <item>
+      <title>Not sponsored, says so explicitly</title>
+      <link>https://www.example.com/regular-story</link>
+      <pubDate>Sat, 21 Nov 2026 11:00:00 GMT</pubDate>
+      <metadata:sponsored>false</metadata:sponsored>
+    </item>
+    <item>
+      <title>Item without a link is dropped</title>
+      <pubDate>Sat, 21 Nov 2026 12:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Item with a bad date is dropped</title>
+      <link>https://www.example.com/bad-date</link>
+      <pubDate>sometime last week</pubDate>
+    </item>
+  </channel>
+</rss>
