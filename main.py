@@ -12,7 +12,7 @@ import config
 from analysis import compute_returns, find_outliers, top_companies
 from data import fetch_closes, fetch_market_caps
 from report import build_report
-from storage import connect, save_snapshot
+from storage import connect, save_snapshot, save_prices
 from universe import load_universe
 
 
@@ -49,6 +49,7 @@ def main():
 
     conn = connect(config.DB_PATH)
     save_snapshot(conn, last_day, returns)
+    save_prices(conn, closes)  # keeps the daily closes so the dashboard can draw price charts
     conn.close()
 
     config.REPORTS_DIR.mkdir(parents=True, exist_ok=True)
